@@ -1,0 +1,176 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Tools-Will - Imágenes a PDF</title>
+    <link rel="stylesheet" href="styles.css">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+</head>
+<body>
+    <!-- Pantalla de Login -->
+    <div id="login-screen" class="screen">
+        <div class="login-container">
+            <h1>Tools-Will</h1>
+            <p>Herramienta de Imágenes a PDF</p>
+            <div class="login-form">
+                <input type="password" id="password-input" placeholder="Ingresa la contraseña" maxlength="20">
+                <button id="login-btn">Acceder</button>
+                <div id="login-error" class="error-message"></div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Interfaz Principal -->
+    <div id="main-app" class="screen hidden">
+        <!-- Menú Lateral -->
+        <nav id="sidebar" class="sidebar">
+            <div class="sidebar-header">
+                <h2>Tools-Will</h2>
+                <button id="sidebar-toggle" class="sidebar-toggle">☰</button>
+            </div>
+            <ul class="sidebar-menu">
+                <li class="menu-item active" data-tool="image-to-pdf">
+                    <span class="menu-icon">📄</span>
+                    <span class="menu-text">Imágenes a PDF</span>
+                </li>
+                <li class="menu-item" data-tool="import-cartola">
+                    <span class="menu-icon">🏦</span>
+                    <span class="menu-text">Importar Cartolas</span>
+                </li>
+                <li class="menu-item" data-tool="placeholder">
+                    <span class="menu-icon">🔧</span>
+                    <span class="menu-text">Próximas Herramientas</span>
+                </li>
+            </ul>
+        </nav>
+
+        <!-- Área de Trabajo Principal -->
+        <main id="main-content" class="main-content">
+
+            <!-- Herramienta: Imágenes a PDF -->
+            <div id="tool-image-to-pdf" class="tool-section">
+                <header class="content-header">
+                    <h1>Imágenes a PDF</h1>
+                    <div class="header-actions">
+                        <button id="export-pdf-btn" class="btn-primary">Exportar a PDF</button>
+                    </div>
+                </header>
+
+                <div class="workspace">
+                    <div class="instructions">
+                        <h3>¿Cómo usar?</h3>
+                        <ol>
+                            <li>Copia una imagen desde tu pantalla (Ctrl+C o captura de pantalla)</li>
+                            <li>Pégala directamente con Ctrl+V en cualquier lugar de la aplicación</li>
+                            <li>Agrega un comentario/descripción a cada imagen</li>
+                            <li>Usa el botón "+" para agregar espacios adicionales si necesitas</li>
+                            <li>Haz clic en "Exportar a PDF" cuando termines</li>
+                        </ol>
+                        <div class="tip">
+                            <strong>💡 Tip:</strong> No necesitas guardar las imágenes en archivos. Simplemente cópialas desde cualquier lugar y pégalas aquí.
+                        </div>
+                    </div>
+
+                    <div id="images-container" class="images-container">
+                        <!-- Las imágenes se agregarán aquí dinámicamente -->
+                    </div>
+
+                    <div class="add-image-section">
+                        <button id="add-image-btn" class="btn-secondary">
+                            <span class="plus-icon">+</span>
+                            Agregar Imagen
+                        </button>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Herramienta: Importar Cartolas -->
+            <div id="tool-import-cartola" class="tool-section hidden">
+                <header class="content-header">
+                    <h1>Importar Cartolas a Kame ERP</h1>
+                </header>
+                <div class="workspace">
+                    <div class="instructions">
+                        <h3>¿Cómo usar?</h3>
+                        <ol>
+                            <li>Copia una imagen de tu cartola bancaria (Ctrl+C o captura de pantalla)</li>
+                            <li>Pégala con Ctrl+V en el área de abajo</li>
+                            <li>La IA (DeepSeek) analizará la imagen y extraerá los movimientos</li>
+                            <li>Revisa el resultado y cópialo para importar a Kame ERP</li>
+                        </ol>
+                        <div class="tip">
+                            <strong>💡 Tip:</strong> Asegúrate de que la imagen sea legible. La cartola debe mostrar claramente las columnas de fecha, descripción, cargo/abono y monto.
+                        </div>
+                    </div>
+
+                    <div class="cartola-container">
+                        <!-- Área de pegado de imagen -->
+                        <div class="cartola-paste-area" id="cartola-paste-area" tabindex="0">
+                            <div class="cartola-paste-placeholder" id="cartola-paste-placeholder">
+                                <span class="paste-icon">📋</span>
+                                <p><strong>Presiona Ctrl+V</strong> para pegar la imagen de la cartola aquí</p>
+                                <p class="paste-sub">O arrastra y suelta una imagen</p>
+                            </div>
+                            <img id="cartola-preview" class="cartola-preview hidden" alt="Vista previa de cartola">
+                            <button id="clear-cartola-btn" class="btn-secondary hidden">Limpiar imagen</button>
+                        </div>
+
+                        <!-- Configuración API Key -->
+                        <div class="apikey-section">
+                            <label for="deepseek-apikey">API Key de DeepSeek:</label>
+                            <div class="apikey-input-group">
+                                <input type="password" id="deepseek-apikey" placeholder="sk-...">
+                                <button id="save-apikey-btn" class="btn-small">Guardar</button>
+                            </div>
+                            <span class="form-help">Se guarda localmente en tu navegador. También puedes definir DEEPSEEK_API_KEY en las variables de entorno de Railway.</span>
+                        </div>
+
+                        <!-- Botón procesar -->
+                        <div class="process-section">
+                            <button id="process-cartola-btn" class="btn-primary" disabled>
+                                <span>🔍</span> Analizar cartola con DeepSeek
+                            </button>
+                            <div id="process-status" class="process-status"></div>
+                        </div>
+
+                        <!-- Resultado -->
+                        <div class="result-section hidden" id="result-section">
+                            <div class="result-header">
+                                <h3>Resultado para Kame ERP</h3>
+                                <button id="copy-result-btn" class="btn-small">📋 Copiar todo</button>
+                            </div>
+                            <textarea id="cartola-result" readonly rows="12"></textarea>
+                            <div class="result-info">
+                                <span class="form-help">Formato: Fecha;Comentario;Tipo Mov.;Nº Mov.;Monto</span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </main>
+    </div>
+
+    <!-- Modal para Exportar PDF -->
+    <div id="export-modal" class="modal hidden">
+        <div class="modal-content">
+            <h3>Exportar a PDF</h3>
+            <div class="form-group">
+                <label for="pdf-title">Título del documento:</label>
+                <input type="text" id="pdf-title" placeholder="Mi Guía de Imágenes" value="Mi Guía de Imágenes">
+            </div>
+            <div class="form-group">
+                <label for="pdf-filename">Nombre del archivo:</label>
+                <input type="text" id="pdf-filename" placeholder="mi-guia.pdf" value="mi-guia.pdf">
+            </div>
+            <div class="modal-actions">
+                <button id="cancel-export-btn" class="btn-secondary">Cancelar</button>
+                <button id="confirm-export-btn" class="btn-primary">Exportar</button>
+            </div>
+        </div>
+    </div>
+
+    <script src="config.js"></script>
+    <script src="app.js"></script>
+</body>
+</html>
