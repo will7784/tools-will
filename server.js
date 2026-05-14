@@ -141,10 +141,12 @@ app.post('/api/analyze-cartola-vision', async (req, res) => {
         return res.status(500).json({ error: 'GEMINI_API_KEY no está configurada en las variables de entorno' });
     }
 
-    const { imageBase64 } = req.body;
+    const { imageBase64, mimeType } = req.body;
     if (!imageBase64) {
-        return res.status(400).json({ error: 'No se recibió imagen' });
+        return res.status(400).json({ error: 'No se recibió archivo' });
     }
+
+    const finalMimeType = mimeType || 'image/png';
 
     const prompt = `Analiza esta imagen de una cartola bancaria y extrae TODOS los movimientos visibles en la tabla.
 
