@@ -912,7 +912,7 @@ async function processCartolaWithDeepSeek() {
 
     processBtn.disabled = true;
     processBtn.innerHTML = '<span>⏳</span> Analizando...';
-    status.textContent = 'Enviando imagen a Gemini para análisis con visión...';
+    status.textContent = 'Leyendo información de la cartola...';
     status.className = 'process-status info';
     resultSection.classList.add('hidden');
 

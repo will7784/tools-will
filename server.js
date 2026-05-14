@@ -182,47 +182,59 @@ app.post('/api/analyze-cartola-vision', async (req, res) => {
         }
 
         const pageCount = imageUrls.length;
-        const prompt = `Analiza ${pageCount > 1 ? 'estas imágenes' : 'esta imagen'} de una cartola bancaria (${pageCount} página${pageCount > 1 ? 's' : ''}) y extrae TODOS los movimientos visibles en la${pageCount > 1 ? 's' : ''} tabla.
+        const prompt = `Eres un experto contable chileno especializado en leer cartolas bancarias del Banco de Chile. Tu tarea es extraer TODOS los movimientos de la cartola con 100% de precisión.
 
-Devuélveme EXCLUSIVAMENTE un JSON con esta estructura exacta (sin markdown, sin explicaciones, solo el JSON puro):
+La tabla tiene estas columnas EXACTAS de izquierda a derecha:
+1. Fecha
+2. Descripción
+3. Canal o Sucursal
+4. N° Documento
+5. Cargos (CLP) — montos de SALIDA de dinero
+6. Abonos (CLP) — montos de ENTRADA de dinero
+7. Saldo (CLP) — saldo después del movimiento
 
-{
-  "movimientos": [
-    {
-      "fecha": "dd/mm/aaaa",
-      "comentario": "descripción del movimiento",
-      "tipo": "CARGO|CHEQUE|ABONO|DEPOSITO",
-      "numero_mov": "número",
-      "monto": 12345,
-      "saldo_despues": 123456
-    }
-  ]
-}
+REGLAS ABSOLUTAS (no negociables):
 
-INSTRUCCIONES CRÍTICAS:
+A. LECTURA DE MONTOS:
+   - Cada fila tiene UN solo monto: o está en Cargos, o está en Abonos. NUNCA en ambas.
+   - Si ves un número en la columna "Cargos (CLP)", ese movimiento es SALIDA de dinero.
+   - Si ves un número en la columna "Abonos (CLP)", ese movimiento es ENTRADA de dinero.
+   - NO inventes montos. Si una celda está vacía o tiene "0", ignórala.
 
-1. La tabla tiene DOS COLUMNAS de montos separadas: "Cargos (CLP)" y "Abonos (CLP)".
-   - Lee CUIDADOSAMENTE en qué columna está cada monto.
-   - Si el monto está en la columna Cargos → tipo = "CARGO" (o "CHEQUE" si es cheque)
-   - Si el monto está en la columna Abonos → tipo = "ABONO" (o "DEPOSITO")
-   - "TRASPASO A..." o "PAGO A..." generalmente son CARGOS (salida)
-   - "TRASPASO DESDE...", "TRASPASO DE..." o "PAGO RECIBIDO" generalmente son ABONOS (entrada)
+B. CLASIFICACIÓN POR COLUMNA (esto es CRÍTICO):
+   - Monto en Cargos → tipo = "CARGO" (numero_mov = "2")
+   - Monto en Abonos → tipo = "ABONO" (numero_mov = "1")
+   - Si en la columna Cargos dice "CHEQUE" o "CHQ" → tipo = "CHEQUE" (numero_mov = número del documento)
 
-2. ABONOS (entradas): tipo = "ABONO", numero_mov = "1"
+C. VALIDACIÓN CON SALDOS:
+   - El saldo debe ir bajando después de un CARGO.
+   - El saldo debe ir subiendo después de un ABONO.
+   - Si tu clasificación hace que el saldo vaya al revés, ESTÁS MAL. Corrige inmediatamente.
 
-3. CARGOS (salidas):
-   - tipo = "CARGO", numero_mov = "2" (99% de los casos)
-   - Si es CHEQUE: tipo = "CHEQUE", numero_mov = número del cheque
+D. EJEMPLO DE LECTURA CORRECTA:
+   Fecha: 26/03/2026 | Descripción: "Traspaso a 96571220-8 FMU" | Cargos: 85.000.000 | Abonos: 0 | Saldo: 1.813.658
+   → fecha: "26/03/2026", comentario: "Traspaso a 96571220-8 FMU", tipo: "CARGO", numero_mov: "2", monto: 85000000, saldo_despues: 1813658
 
-4. DEPÓSITOS: tipo = "DEPOSITO", numero_mov = "1"
+   Fecha: 26/03/2026 | Descripción: "TRASPASO DESDE OTRA CUENTA CORRIENTE" | Cargos: 0 | Abonos: 33.000.000 | Saldo: 86.813.658
+   → fecha: "26/03/2026", comentario: "TRASPASO DESDE OTRA CUENTA CORRIENTE", tipo: "ABONO", numero_mov: "1", monto: 33000000, saldo_despues: 86813658
 
-5. Fecha: formato dd/mm/aaaa
+   Fecha: 02/03/2026 | Descripción: "CARGO SEGURO PROTECCION BANCARIA" | Cargos: 8.151 | Abonos: 0 | Saldo: 45.841.419
+   → fecha: "02/03/2026", comentario: "CARGO SEGURO PROTECCION BANCARIA", tipo: "CARGO", numero_mov: "2", monto: 8151, saldo_despues: 45841419
 
-6. Monto: número entero SIN decimales, SIN puntos de miles, SIN símbolos de moneda.
+E. FORMATO DE SALIDA:
+   - Devuelve EXCLUSIVAMENTE un JSON puro (sin markdown, sin explicaciones).
+   - Fecha: dd/mm/aaaa
+   - Monto: número entero sin puntos ni comas (ej: 85000000, no 85.000.000)
+   - saldo_despues: número entero sin puntos ni comas
+   - No incluyas filas sin monto.
 
-7. saldo_despues: saldo que aparece en la columna "Saldo (CLP)" DESPUÉS de este movimiento. Número entero sin decimales.
+F. ANTES de devolver el JSON, verifica:
+   1. ¿Cada fila tiene exactamente un monto (cargo O abono, no ambos ni ninguno)?
+   2. ¿Los saldos son consistentes (suben con abonos, bajan con cargos)?
+   3. ¿No hay montos duplicados entre filas consecutivas?
+   4. ¿El número de filas coincide con el número de fechas en la tabla?
 
-8. No incluyas totales ni resúmenes. Solo filas individuales de la tabla.`;
+Analiza ${pageCount > 1 ? 'estas imágenes' : 'esta imagen'} de la cartola (${pageCount} página${pageCount > 1 ? 's' : ''}) y devuelve SOLO el JSON:`;
 
         const contentParts = [{ type: 'text', text: prompt }];
         imageUrls.forEach(url => {
