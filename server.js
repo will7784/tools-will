@@ -25,17 +25,27 @@ Devuélveme EXCLUSIVAMENTE un JSON con esta estructura exacta (sin markdown, sin
       "comentario": "descripción del movimiento",
       "tipo": "CARGO|CHEQUE|ABONO|DEPOSITO",
       "numero_mov": "número",
-      "monto": 12345.67
+      "monto": 12345,
+      "saldo_despues": 123456
     }
   ]
 }
 
-REGLAS CRÍTICAS PARA DETERMINAR tipo Y numero_mov:
+REGLAS CRÍTICAS PARA DETERMINAR tipo, numero_mov Y saldo_despues:
 
-1. ABONOS (entradas de dinero):
+1. IDENTIFICAR CARGO vs ABONO:
+   La cartola tiene DOS COLUMNAS separadas: "Cargos (CLP)" y "Abonos (CLP)".
+   - Si el monto aparece en la columna de CARGOS (salida de dinero) → tipo = "CARGO" o "CHEQUE"
+   - Si el monto aparece en la columna de ABONOS (entrada de dinero) → tipo = "ABONO" o "DEPOSITO"
+   - NO asumas que "PAGO" siempre es cargo. Un "PAGO RECIBIDO" o "TRASPASO DESDE..." puede ser ABONO.
+   - "TRASPASO A..." generalmente es CARGO (salida).
+   - "TRASPASO DESDE..." o "TRASPASO DE..." generalmente es ABONO (entrada).
+   - Revisa el saldo después de cada fila: si el saldo SUBIÓ respecto a la fila anterior, ese movimiento es ABONO/DEPOSITO. Si el saldo BAJÓ, es CARGO/CHEQUE.
+
+2. ABONOS (entradas de dinero):
    - Siempre tipo = "ABONO" y numero_mov = "1"
 
-2. CARGOS (salidas de dinero):
+3. CARGOS (salidas de dinero):
    - En el 99% de los casos: tipo = "CARGO" y numero_mov = "2"
    - PERO si detectas explícitamente la palabra "CHEQUE" o "CHQ" o similar en la descripción o en la columna de cargo, entonces:
      * tipo = "CHEQUE"
@@ -43,19 +53,21 @@ REGLAS CRÍTICAS PARA DETERMINAR tipo Y numero_mov:
      * Si no hay número visible, usa "0"
    - Si es una transferencia u otro cargo normal: tipo = "CARGO", numero_mov = "2"
 
-3. DEPÓSITOS:
+4. DEPÓSITOS:
    - tipo = "DEPOSITO"
    - numero_mov = número de documento si está visible, si no "1"
 
-4. Fecha: devuélvela siempre en formato dd/mm/aaaa. Si el año no está visible, infiere el año actual.
+5. Fecha: devuélvela siempre en formato dd/mm/aaaa. Si el año no está visible, infiere el año actual.
 
-5. Monto: número decimal con punto como separador (ej: 15000.50). Sin símbolos de moneda. Si el OCR trajo comas o puntos mezclados, corrígelo.
+6. Monto: número entero sin decimales. Sin símbolos de moneda ni puntos de miles. Si el OCR trajo comas o puntos mezclados, corrígelo al número entero puro.
 
-6. Comentario: descripción completa del movimiento.
+7. saldo_despues: saldo que aparece en la columna "Saldo (CLP)" DESPUÉS de este movimiento. Número entero sin decimales. Esto es CRÍTICO para validar la dirección del movimiento.
 
-7. No incluyas totales, saldos ni resúmenes. Solo movimientos individuales.
+8. Comentario: descripción completa del movimiento.
 
-8. Si el texto OCR está desordenado o tiene errores, infiere lo mejor posible basándote en el contexto.`;
+9. No incluyas totales, saldos ni resúmenes. Solo movimientos individuales.
+
+10. Si el texto OCR está desordenado o tiene errores, infiere lo mejor posible basándote en el contexto y en la variación de saldos.`;
 }
 
 // Proxy para analizar cartola con DeepSeek (modo imagen - legacy)

@@ -845,6 +845,46 @@ function clearCartolaImage() {
     status.textContent = '';
 }
 
+async function preprocessImage(dataUrl) {
+    return new Promise((resolve, reject) => {
+        const img = new Image();
+        img.crossOrigin = 'anonymous';
+        img.onload = function() {
+            const canvas = document.createElement('canvas');
+            const ctx = canvas.getContext('2d');
+
+            // Upscale 2x para mejorar OCR
+            const scale = 2;
+            canvas.width = img.width * scale;
+            canvas.height = img.height * scale;
+
+            // Fondo blanco
+            ctx.fillStyle = '#FFFFFF';
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
+            ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+
+            const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+            const data = imageData.data;
+
+            for (let i = 0; i < data.length; i += 4) {
+                // Grayscale
+                let gray = 0.299 * data[i] + 0.587 * data[i + 1] + 0.114 * data[i + 2];
+                // Aumentar contraste
+                const contrast = 1.8;
+                gray = ((gray - 128) * contrast) + 128;
+                // Threshold adaptativo simple
+                const final = gray > 200 ? 255 : (gray < 80 ? 0 : gray);
+                data[i] = data[i + 1] = data[i + 2] = final;
+            }
+
+            ctx.putImageData(imageData, 0, 0);
+            resolve(canvas.toDataURL('image/png'));
+        };
+        img.onerror = reject;
+        img.src = dataUrl;
+    });
+}
+
 async function processCartolaWithDeepSeek() {
     const status = document.getElementById('process-status');
     const processBtn = document.getElementById('process-cartola-btn');
@@ -858,14 +898,24 @@ async function processCartolaWithDeepSeek() {
 
     processBtn.disabled = true;
     processBtn.innerHTML = '<span>⏳</span> Analizando...';
-    status.textContent = 'Extrayendo texto de la imagen con OCR...';
+    status.textContent = 'Preprocesando imagen para mejorar OCR...';
     status.className = 'process-status info';
     resultSection.classList.add('hidden');
 
+    let processedImage = cartolaImageData;
+    try {
+        processedImage = await preprocessImage(cartolaImageData);
+        // Actualizar preview con imagen procesada (opcional, ayuda al usuario a ver que se procesó)
+        document.getElementById('cartola-preview').src = processedImage;
+    } catch (preErr) {
+        console.warn('Preprocesamiento falló, usando imagen original:', preErr);
+    }
+
     let ocrText = '';
     try {
+        status.textContent = 'Extrayendo texto de la imagen con OCR...';
         const result = await Tesseract.recognize(
-            cartolaImageData,
+            processedImage,
             'spa',
             {
                 logger: m => {
@@ -928,8 +978,11 @@ async function processCartolaWithDeepSeek() {
             throw new Error('No se encontraron movimientos en la respuesta. Intenta con una imagen más clara.');
         }
 
+        // Corregir tipos basándose en saldos (si están disponibles)
+        const corrected = correctMovementsByBalance(parsed.movimientos);
+
         // Formatear resultado para Kame ERP (sin encabezado, montos enteros)
-        const lines = parsed.movimientos.map(mov => {
+        const lines = corrected.map(mov => {
             const fecha = mov.fecha || '';
             const comentario = (mov.comentario || '').replace(/;/g, ',');
             const tipo = mov.tipo || 'CARGO';
@@ -942,7 +995,7 @@ async function processCartolaWithDeepSeek() {
 
         resultTextarea.value = output;
         resultSection.classList.remove('hidden');
-        status.textContent = `✅ ${parsed.movimientos.length} movimientos extraídos correctamente.`;
+        status.textContent = `✅ ${corrected.length} movimientos extraídos correctamente.`;
         status.className = 'process-status success';
 
         // Restaurar valores de validación si existen
@@ -961,6 +1014,72 @@ async function processCartolaWithDeepSeek() {
 // ============================================================
 // VALIDACIÓN DE SALDO
 // ============================================================
+
+function correctMovementsByBalance(movimientos) {
+    if (!Array.isArray(movimientos) || movimientos.length < 2) return movimientos;
+
+    const corrected = [...movimientos];
+
+    for (let i = 0; i < corrected.length; i++) {
+        const mov = corrected[i];
+        const monto = typeof mov.monto === 'number' ? Math.round(mov.monto) : (parseInt(mov.monto) || 0);
+        const saldoActual = typeof mov.saldo_despues === 'number' ? Math.round(mov.saldo_despues) : null;
+        const saldoAnterior = i > 0
+            ? (typeof corrected[i - 1].saldo_despues === 'number' ? Math.round(corrected[i - 1].saldo_despues) : null)
+            : null;
+
+        // Si no hay saldos, no podemos corregir
+        if (saldoActual === null) continue;
+
+        const tipo = (mov.tipo || '').toUpperCase();
+        let shouldBeCargo = false;
+
+        if (saldoAnterior !== null) {
+            const diff = saldoActual - saldoAnterior;
+            // Si el saldo subió, es entrada (abono/deposito)
+            // Si el saldo bajó, es salida (cargo/cheque)
+            if (Math.abs(diff) > 100 && Math.abs(Math.abs(diff) - monto) < Math.max(monto * 0.1, 1000)) {
+                shouldBeCargo = diff < 0;
+            }
+        }
+
+        // Corregir tipo basado en la variación de saldo
+        const isExit = ['CARGO', 'CHEQUE'].includes(tipo);
+        const isEntry = ['ABONO', 'DEPOSITO'].includes(tipo);
+
+        if (shouldBeCargo && isEntry) {
+            // Debería ser salida pero está marcado como entrada
+            if (tipo === 'ABONO' && mov.comentario && /cheque|chq/i.test(mov.comentario)) {
+                mov.tipo = 'CHEQUE';
+                mov.numero_mov = mov.numero_mov && mov.numero_mov !== '1' ? mov.numero_mov : '0';
+            } else {
+                mov.tipo = 'CARGO';
+                mov.numero_mov = '2';
+            }
+            console.warn(`[Corrección] Fila ${i + 1}: ${mov.comentario} cambiado de ${tipo} a ${mov.tipo} por saldo`);
+        } else if (!shouldBeCargo && isExit) {
+            // Debería ser entrada pero está marcado como salida
+            mov.tipo = 'ABONO';
+            mov.numero_mov = '1';
+            console.warn(`[Corrección] Fila ${i + 1}: ${mov.comentario} cambiado de ${tipo} a ABONO por saldo`);
+        }
+
+        // Corrección de monto basado en diferencia de saldo
+        if (saldoAnterior !== null) {
+            const diff = Math.abs(saldoActual - saldoAnterior);
+            if (diff > 100 && Math.abs(diff - monto) > Math.max(monto * 0.05, 500)) {
+                // El monto no coincide con la variación de saldo
+                // Si el monto está muy lejos del diff, usar el diff como monto corregido
+                if (diff > monto * 1.5 || diff < monto * 0.5) {
+                    mov.monto = Math.round(diff);
+                    console.warn(`[Corrección] Fila ${i + 1}: monto ajustado de ${monto} a ${mov.monto} por saldo`);
+                }
+            }
+        }
+    }
+
+    return corrected;
+}
 
 function calculateAndValidateBalance() {
     const resultTextarea = document.getElementById('cartola-result');
