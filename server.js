@@ -256,7 +256,8 @@ Analiza ${pageCount > 1 ? 'estas imágenes' : 'esta imagen'} de la cartola (${pa
                     }
                 ],
                 temperature: 0.1,
-                max_tokens: 4000
+                max_tokens: 4000,
+                response_format: { type: 'json_object' }
             })
         });
 

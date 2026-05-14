@@ -938,11 +938,33 @@ async function processCartolaWithDeepSeek() {
         const data = await response.json();
         const content = data.choices?.[0]?.message?.content || '';
 
-        // Extraer JSON de la respuesta (a veces viene con markdown)
-        let jsonStr = content;
-        const jsonMatch = content.match(/\{[\s\S]*\}/);
-        if (jsonMatch) {
-            jsonStr = jsonMatch[0];
+        // Extraer JSON de la respuesta (soporta markdown y texto extra)
+        let jsonStr = null;
+
+        // 1. Buscar bloque markdown ```json ... ```
+        const mdMatch = content.match(/```(?:json)?\s*([\s\S]*?)\s*```/);
+        if (mdMatch) {
+            jsonStr = mdMatch[1];
+        } else {
+            // 2. Buscar JSON con balance de llaves
+            let braceCount = 0;
+            let start = -1;
+            for (let i = 0; i < content.length; i++) {
+                if (content[i] === '{') {
+                    if (braceCount === 0) start = i;
+                    braceCount++;
+                } else if (content[i] === '}') {
+                    braceCount--;
+                    if (braceCount === 0 && start !== -1) {
+                        jsonStr = content.substring(start, i + 1);
+                        break;
+                    }
+                }
+            }
+        }
+
+        if (!jsonStr) {
+            jsonStr = content;
         }
 
         let parsed;
