@@ -159,28 +159,30 @@ app.post('/api/analyze-cartola-vision', async (req, res) => {
     let imageDataUrl = `data:${finalMimeType};base64,${imageBase64}`;
 
     try {
-        // Si es PDF, convertir a imagen primero
+        let imageUrls = [];
+
+        // Si es PDF, convertir todas las páginas a imágenes
         if (finalMimeType === 'application/pdf') {
             try {
                 const { pdf } = await getPdfToImg();
                 const pdfBuffer = Buffer.from(imageBase64, 'base64');
                 const document = await pdf(pdfBuffer, { scale: 2 });
-                let firstPage = null;
                 for await (const image of document) {
-                    firstPage = image;
-                    break; // Solo primera página
+                    imageUrls.push(`data:image/png;base64,${image.toString('base64')}`);
                 }
-                if (!firstPage) {
-                    return res.status(400).json({ error: 'No se pudo convertir el PDF a imagen' });
+                if (imageUrls.length === 0) {
+                    return res.status(400).json({ error: 'No se pudo convertir el PDF a imágenes' });
                 }
-                imageDataUrl = `data:image/png;base64,${firstPage.toString('base64')}`;
             } catch (pdfErr) {
                 console.error('Error convirtiendo PDF:', pdfErr);
                 return res.status(400).json({ error: 'Error al procesar el PDF. Por favor conviértelo a imagen (PNG/JPG) e intenta de nuevo.' });
             }
+        } else {
+            imageUrls.push(imageDataUrl);
         }
 
-        const prompt = `Analiza esta imagen de una cartola bancaria y extrae TODOS los movimientos visibles en la tabla.
+        const pageCount = imageUrls.length;
+        const prompt = `Analiza ${pageCount > 1 ? 'estas imágenes' : 'esta imagen'} de una cartola bancaria (${pageCount} página${pageCount > 1 ? 's' : ''}) y extrae TODOS los movimientos visibles en la${pageCount > 1 ? 's' : ''} tabla.
 
 Devuélveme EXCLUSIVAMENTE un JSON con esta estructura exacta (sin markdown, sin explicaciones, solo el JSON puro):
 
@@ -222,6 +224,11 @@ INSTRUCCIONES CRÍTICAS:
 
 8. No incluyas totales ni resúmenes. Solo filas individuales de la tabla.`;
 
+        const contentParts = [{ type: 'text', text: prompt }];
+        imageUrls.forEach(url => {
+            contentParts.push({ type: 'image_url', image_url: { url } });
+        });
+
         const response = await fetch('https://api.openai.com/v1/chat/completions', {
             method: 'POST',
             headers: {
@@ -233,10 +240,7 @@ INSTRUCCIONES CRÍTICAS:
                 messages: [
                     {
                         role: 'user',
-                        content: [
-                            { type: 'text', text: prompt },
-                            { type: 'image_url', image_url: { url: imageDataUrl } }
-                        ]
+                        content: contentParts
                     }
                 ],
                 temperature: 0.1,
