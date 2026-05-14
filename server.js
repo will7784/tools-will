@@ -1,5 +1,6 @@
 const express = require('express');
 const path = require('path');
+const { pdf } = require('pdf-to-img');
 const app = express();
 const PORT = process.env.PORT || 3000;
 
@@ -134,11 +135,11 @@ app.post('/api/analyze-cartola-text', async (req, res) => {
     }
 });
 
-// Endpoint con visión directa usando Gemini 1.5 Flash
+// Endpoint con visión directa usando OpenAI GPT-4o
 app.post('/api/analyze-cartola-vision', async (req, res) => {
-    const apiKey = process.env.GEMINI_API_KEY;
+    const apiKey = process.env.OPENAI_API_KEY;
     if (!apiKey) {
-        return res.status(500).json({ error: 'GEMINI_API_KEY no está configurada en las variables de entorno' });
+        return res.status(500).json({ error: 'OPENAI_API_KEY no está configurada en las variables de entorno' });
     }
 
     const { imageBase64, mimeType } = req.body;
@@ -147,8 +148,25 @@ app.post('/api/analyze-cartola-vision', async (req, res) => {
     }
 
     const finalMimeType = mimeType || 'image/png';
+    let imageDataUrl = `data:${finalMimeType};base64,${imageBase64}`;
 
-    const prompt = `Analiza esta imagen de una cartola bancaria y extrae TODOS los movimientos visibles en la tabla.
+    try {
+        // Si es PDF, convertir a imagen primero
+        if (finalMimeType === 'application/pdf') {
+            const pdfBuffer = Buffer.from(imageBase64, 'base64');
+            const document = await pdf(pdfBuffer, { scale: 2 });
+            let firstPage = null;
+            for await (const image of document) {
+                firstPage = image;
+                break; // Solo primera página
+            }
+            if (!firstPage) {
+                return res.status(400).json({ error: 'No se pudo convertir el PDF a imagen' });
+            }
+            imageDataUrl = `data:image/png;base64,${firstPage.toString('base64')}`;
+        }
+
+        const prompt = `Analiza esta imagen de una cartola bancaria y extrae TODOS los movimientos visibles en la tabla.
 
 Devuélveme EXCLUSIVAMENTE un JSON con esta estructura exacta (sin markdown, sin explicaciones, solo el JSON puro):
 
@@ -190,18 +208,25 @@ INSTRUCCIONES CRÍTICAS:
 
 8. No incluyas totales ni resúmenes. Solo filas individuales de la tabla.`;
 
-    try {
-        const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-pro-vision:generateContent?key=${apiKey}`, {
+        const response = await fetch('https://api.openai.com/v1/chat/completions', {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            headers: {
+                'Content-Type': 'application/json',
+                'Authorization': `Bearer ${apiKey}`
+            },
             body: JSON.stringify({
-                contents: [{
-                    parts: [
-                        { text: prompt },
-                        { inlineData: { mimeType: finalMimeType, data: imageBase64 } }
-                    ]
-                }],
-                generationConfig: { temperature: 0.1, maxOutputTokens: 4000 }
+                model: 'gpt-4o',
+                messages: [
+                    {
+                        role: 'user',
+                        content: [
+                            { type: 'text', text: prompt },
+                            { type: 'image_url', image_url: { url: imageDataUrl } }
+                        ]
+                    }
+                ],
+                temperature: 0.1,
+                max_tokens: 4000
             })
         });
 
@@ -213,29 +238,9 @@ INSTRUCCIONES CRÍTICAS:
         }
 
         const data = await response.json();
-        const textPart = data.candidates?.[0]?.content?.parts?.[0]?.text || '';
-
-        // Extraer JSON
-        let jsonStr = textPart;
-        const jsonMatch = textPart.match(/\{[\s\S]*\}/);
-        if (jsonMatch) {
-            jsonStr = jsonMatch[0];
-        }
-
-        const parsed = JSON.parse(jsonStr);
-
-        // Normalizar a formato compatible con frontend
-        const normalized = {
-            choices: [{
-                message: {
-                    content: JSON.stringify(parsed)
-                }
-            }]
-        };
-
-        res.json(normalized);
+        res.json(data);
     } catch (error) {
-        console.error('Error Gemini:', error);
+        console.error('Error OpenAI:', error);
         res.status(500).json({ error: error.message });
     }
 });
