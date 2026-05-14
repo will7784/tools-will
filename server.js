@@ -1,8 +1,16 @@
 const express = require('express');
 const path = require('path');
-const { pdf } = require('pdf-to-img');
 const app = express();
 const PORT = process.env.PORT || 3000;
+
+// Cargar pdf-to-img de forma lazy para evitar crash en arranque
+let pdfToImg = null;
+async function getPdfToImg() {
+    if (!pdfToImg) {
+        pdfToImg = require('pdf-to-img');
+    }
+    return pdfToImg;
+}
 
 app.use(express.json({ limit: '10mb' }));
 
@@ -153,17 +161,23 @@ app.post('/api/analyze-cartola-vision', async (req, res) => {
     try {
         // Si es PDF, convertir a imagen primero
         if (finalMimeType === 'application/pdf') {
-            const pdfBuffer = Buffer.from(imageBase64, 'base64');
-            const document = await pdf(pdfBuffer, { scale: 2 });
-            let firstPage = null;
-            for await (const image of document) {
-                firstPage = image;
-                break; // Solo primera página
+            try {
+                const { pdf } = await getPdfToImg();
+                const pdfBuffer = Buffer.from(imageBase64, 'base64');
+                const document = await pdf(pdfBuffer, { scale: 2 });
+                let firstPage = null;
+                for await (const image of document) {
+                    firstPage = image;
+                    break; // Solo primera página
+                }
+                if (!firstPage) {
+                    return res.status(400).json({ error: 'No se pudo convertir el PDF a imagen' });
+                }
+                imageDataUrl = `data:image/png;base64,${firstPage.toString('base64')}`;
+            } catch (pdfErr) {
+                console.error('Error convirtiendo PDF:', pdfErr);
+                return res.status(400).json({ error: 'Error al procesar el PDF. Por favor conviértelo a imagen (PNG/JPG) e intenta de nuevo.' });
             }
-            if (!firstPage) {
-                return res.status(400).json({ error: 'No se pudo convertir el PDF a imagen' });
-            }
-            imageDataUrl = `data:image/png;base64,${firstPage.toString('base64')}`;
         }
 
         const prompt = `Analiza esta imagen de una cartola bancaria y extrae TODOS los movimientos visibles en la tabla.
