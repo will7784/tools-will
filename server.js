@@ -143,11 +143,11 @@ app.post('/api/analyze-cartola-text', async (req, res) => {
     }
 });
 
-// Endpoint con visión directa usando OpenAI GPT-4o
+// Endpoint con visión directa usando Claude 3.5 Sonnet (Anthropic)
 app.post('/api/analyze-cartola-vision', async (req, res) => {
-    const apiKey = process.env.OPENAI_API_KEY;
+    const apiKey = process.env.ANTHROPIC_API_KEY;
     if (!apiKey) {
-        return res.status(500).json({ error: 'OPENAI_API_KEY no está configurada en las variables de entorno' });
+        return res.status(500).json({ error: 'ANTHROPIC_API_KEY no está configurada en las variables de entorno' });
     }
 
     const { imageBase64, mimeType } = req.body;
@@ -156,108 +156,66 @@ app.post('/api/analyze-cartola-vision', async (req, res) => {
     }
 
     const finalMimeType = mimeType || 'image/png';
-    let imageDataUrl = `data:${finalMimeType};base64,${imageBase64}`;
 
     try {
-        let imageUrls = [];
+        const prompt = `Eres un experto contable chileno especializado en leer cartolas bancarias del Banco de Chile. Extrae TODOS los movimientos con 100% de precisión.
 
-        // Si es PDF, convertir todas las páginas a imágenes
+La tabla tiene estas columnas EXACTAS:
+1. Fecha | 2. Descripción | 3. Canal/Sucursal | 4. N° Documento | 5. Cargos (CLP) - SALIDAS | 6. Abonos (CLP) - ENTRADAS | 7. Saldo (CLP)
+
+REGLAS CRÍTICAS:
+- Cada fila tiene UN solo monto: o en Cargos, o en Abonos. NUNCA ambos.
+- Cargos (columna 5) = SALIDA de dinero → tipo "CARGO", numero_mov "2"
+- Abonos (columna 6) = ENTRADA de dinero → tipo "ABONO", numero_mov "1"
+- Si en Cargos dice CHEQUE → tipo "CHEQUE", numero_mov = número del doc
+- Los saldos deben ser consistentes: bajan con CARGOS, suben con ABONOS
+
+EJEMPLOS CORRECTOS:
+- "Traspaso a 96571220-8 FMU" con 85.000.000 en Cargos → CARGO,2,85000000
+- "TRASPASO DESDE OTRA CUENTA" con 33.000.000 en Abonos → ABONO,1,33000000
+- "CARGO SEGURO PROTECCION" con 8.151 en Cargos → CARGO,2,8151
+
+FORMATO: Devuelve SOLO un JSON válido sin texto extra:
+{"movimientos":[{"fecha":"dd/mm/aaaa","comentario":"...","tipo":"CARGO|ABONO|CHEQUE|DEPOSITO","numero_mov":"número","monto":12345,"saldo_despues":123456}]}
+
+Monto y saldo_despues son enteros sin puntos ni comas. No incluyas filas vacías ni totales.`;
+
+        let content = [];
+
         if (finalMimeType === 'application/pdf') {
-            try {
-                const { pdf } = await getPdfToImg();
-                const pdfBuffer = Buffer.from(imageBase64, 'base64');
-                const document = await pdf(pdfBuffer, { scale: 2 });
-                for await (const image of document) {
-                    imageUrls.push(`data:image/png;base64,${image.toString('base64')}`);
+            content.push({
+                type: 'document',
+                source: {
+                    type: 'base64',
+                    media_type: 'application/pdf',
+                    data: imageBase64
                 }
-                if (imageUrls.length === 0) {
-                    return res.status(400).json({ error: 'No se pudo convertir el PDF a imágenes' });
-                }
-            } catch (pdfErr) {
-                console.error('Error convirtiendo PDF:', pdfErr);
-                return res.status(400).json({ error: 'Error al procesar el PDF. Por favor conviértelo a imagen (PNG/JPG) e intenta de nuevo.' });
-            }
+            });
         } else {
-            imageUrls.push(imageDataUrl);
+            content.push({
+                type: 'image',
+                source: {
+                    type: 'base64',
+                    media_type: finalMimeType,
+                    data: imageBase64
+                }
+            });
         }
 
-        const pageCount = imageUrls.length;
-        const prompt = `Eres un experto contable chileno especializado en leer cartolas bancarias del Banco de Chile. Tu tarea es extraer TODOS los movimientos de la cartola con 100% de precisión.
+        content.push({ type: 'text', text: prompt });
 
-La tabla tiene estas columnas EXACTAS de izquierda a derecha:
-1. Fecha
-2. Descripción
-3. Canal o Sucursal
-4. N° Documento
-5. Cargos (CLP) — montos de SALIDA de dinero
-6. Abonos (CLP) — montos de ENTRADA de dinero
-7. Saldo (CLP) — saldo después del movimiento
-
-REGLAS ABSOLUTAS (no negociables):
-
-A. LECTURA DE MONTOS:
-   - Cada fila tiene UN solo monto: o está en Cargos, o está en Abonos. NUNCA en ambas.
-   - Si ves un número en la columna "Cargos (CLP)", ese movimiento es SALIDA de dinero.
-   - Si ves un número en la columna "Abonos (CLP)", ese movimiento es ENTRADA de dinero.
-   - NO inventes montos. Si una celda está vacía o tiene "0", ignórala.
-
-B. CLASIFICACIÓN POR COLUMNA (esto es CRÍTICO):
-   - Monto en Cargos → tipo = "CARGO" (numero_mov = "2")
-   - Monto en Abonos → tipo = "ABONO" (numero_mov = "1")
-   - Si en la columna Cargos dice "CHEQUE" o "CHQ" → tipo = "CHEQUE" (numero_mov = número del documento)
-
-C. VALIDACIÓN CON SALDOS:
-   - El saldo debe ir bajando después de un CARGO.
-   - El saldo debe ir subiendo después de un ABONO.
-   - Si tu clasificación hace que el saldo vaya al revés, ESTÁS MAL. Corrige inmediatamente.
-
-D. EJEMPLO DE LECTURA CORRECTA:
-   Fecha: 26/03/2026 | Descripción: "Traspaso a 96571220-8 FMU" | Cargos: 85.000.000 | Abonos: 0 | Saldo: 1.813.658
-   → fecha: "26/03/2026", comentario: "Traspaso a 96571220-8 FMU", tipo: "CARGO", numero_mov: "2", monto: 85000000, saldo_despues: 1813658
-
-   Fecha: 26/03/2026 | Descripción: "TRASPASO DESDE OTRA CUENTA CORRIENTE" | Cargos: 0 | Abonos: 33.000.000 | Saldo: 86.813.658
-   → fecha: "26/03/2026", comentario: "TRASPASO DESDE OTRA CUENTA CORRIENTE", tipo: "ABONO", numero_mov: "1", monto: 33000000, saldo_despues: 86813658
-
-   Fecha: 02/03/2026 | Descripción: "CARGO SEGURO PROTECCION BANCARIA" | Cargos: 8.151 | Abonos: 0 | Saldo: 45.841.419
-   → fecha: "02/03/2026", comentario: "CARGO SEGURO PROTECCION BANCARIA", tipo: "CARGO", numero_mov: "2", monto: 8151, saldo_despues: 45841419
-
-E. FORMATO DE SALIDA:
-   - Devuelve EXCLUSIVAMENTE un JSON puro (sin markdown, sin explicaciones).
-   - Fecha: dd/mm/aaaa
-   - Monto: número entero sin puntos ni comas (ej: 85000000, no 85.000.000)
-   - saldo_despues: número entero sin puntos ni comas
-   - No incluyas filas sin monto.
-
-F. ANTES de devolver el JSON, verifica:
-   1. ¿Cada fila tiene exactamente un monto (cargo O abono, no ambos ni ninguno)?
-   2. ¿Los saldos son consistentes (suben con abonos, bajan con cargos)?
-   3. ¿No hay montos duplicados entre filas consecutivas?
-   4. ¿El número de filas coincide con el número de fechas en la tabla?
-
-Analiza ${pageCount > 1 ? 'estas imágenes' : 'esta imagen'} de la cartola (${pageCount} página${pageCount > 1 ? 's' : ''}) y devuelve SOLO el JSON:`;
-
-        const contentParts = [{ type: 'text', text: prompt }];
-        imageUrls.forEach(url => {
-            contentParts.push({ type: 'image_url', image_url: { url } });
-        });
-
-        const response = await fetch('https://api.openai.com/v1/chat/completions', {
+        const response = await fetch('https://api.anthropic.com/v1/messages', {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json',
-                'Authorization': `Bearer ${apiKey}`
+                'x-api-key': apiKey,
+                'anthropic-version': '2023-06-01'
             },
             body: JSON.stringify({
-                model: 'gpt-4o',
-                messages: [
-                    {
-                        role: 'user',
-                        content: contentParts
-                    }
-                ],
-                temperature: 0.1,
+                model: 'claude-3-5-sonnet-20241022',
                 max_tokens: 4000,
-                response_format: { type: 'json_object' }
+                temperature: 0.1,
+                messages: [{ role: 'user', content }]
             })
         });
 
@@ -269,9 +227,20 @@ Analiza ${pageCount > 1 ? 'estas imágenes' : 'esta imagen'} de la cartola (${pa
         }
 
         const data = await response.json();
-        res.json(data);
+        const textContent = data.content?.find(c => c.type === 'text')?.text || '';
+
+        // Normalizar a formato compatible con frontend
+        const normalized = {
+            choices: [{
+                message: {
+                    content: textContent
+                }
+            }]
+        };
+
+        res.json(normalized);
     } catch (error) {
-        console.error('Error OpenAI:', error);
+        console.error('Error Anthropic:', error);
         res.status(500).json({ error: error.message });
     }
 });
