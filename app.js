@@ -898,56 +898,20 @@ async function processCartolaWithDeepSeek() {
 
     processBtn.disabled = true;
     processBtn.innerHTML = '<span>⏳</span> Analizando...';
-    status.textContent = 'Preprocesando imagen para mejorar OCR...';
+    status.textContent = 'Enviando imagen a Gemini para análisis con visión...';
     status.className = 'process-status info';
     resultSection.classList.add('hidden');
 
-    let processedImage = cartolaImageData;
     try {
-        processedImage = await preprocessImage(cartolaImageData);
-        // Actualizar preview con imagen procesada (opcional, ayuda al usuario a ver que se procesó)
-        document.getElementById('cartola-preview').src = processedImage;
-    } catch (preErr) {
-        console.warn('Preprocesamiento falló, usando imagen original:', preErr);
-    }
+        const base64Image = cartolaImageData.split(',')[1];
 
-    let ocrText = '';
-    try {
-        status.textContent = 'Extrayendo texto de la imagen con OCR...';
-        const result = await Tesseract.recognize(
-            processedImage,
-            'spa',
-            {
-                logger: m => {
-                    if (m.status === 'recognizing text') {
-                        status.textContent = `Extrayendo texto con OCR... ${Math.round(m.progress * 100)}%`;
-                    }
-                }
-            }
-        );
-        ocrText = result.data.text;
-        if (!ocrText || ocrText.trim().length < 20) {
-            throw new Error('No se pudo extraer texto legible de la imagen. Intenta con una imagen más nítida.');
-        }
-    } catch (ocrError) {
-        console.error('Error OCR:', ocrError);
-        status.textContent = `❌ Error OCR: ${ocrError.message}`;
-        status.className = 'process-status error';
-        processBtn.disabled = false;
-        processBtn.innerHTML = '<span>🔍</span> Analizar cartola con DeepSeek';
-        return;
-    }
-
-    status.textContent = 'Enviando texto extraído a DeepSeek...';
-
-    try {
-        const response = await fetch('/api/analyze-cartola-text', {
+        const response = await fetch('/api/analyze-cartola-vision', {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json'
             },
             body: JSON.stringify({
-                text: ocrText
+                imageBase64: base64Image
             })
         });
 
@@ -971,7 +935,7 @@ async function processCartolaWithDeepSeek() {
             parsed = JSON.parse(jsonStr);
         } catch (e) {
             console.error('JSON parse error:', e, 'Content:', content);
-            throw new Error('La respuesta de DeepSeek no es un JSON válido. Intenta de nuevo o revisa la imagen.');
+            throw new Error('La respuesta no es un JSON válido. Intenta de nuevo o revisa la imagen.');
         }
 
         if (!parsed.movimientos || !Array.isArray(parsed.movimientos)) {
@@ -1007,7 +971,7 @@ async function processCartolaWithDeepSeek() {
         status.className = 'process-status error';
     } finally {
         processBtn.disabled = false;
-        processBtn.innerHTML = '<span>🔍</span> Analizar cartola con DeepSeek';
+        processBtn.innerHTML = '<span>🔍</span> Analizar cartola';
     }
 }
 

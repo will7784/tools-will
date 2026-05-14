@@ -132,6 +132,110 @@ app.post('/api/analyze-cartola-text', async (req, res) => {
     }
 });
 
+// Endpoint con visión directa usando Gemini 1.5 Flash
+app.post('/api/analyze-cartola-vision', async (req, res) => {
+    const apiKey = process.env.GEMINI_API_KEY;
+    if (!apiKey) {
+        return res.status(500).json({ error: 'GEMINI_API_KEY no está configurada en las variables de entorno' });
+    }
+
+    const { imageBase64 } = req.body;
+    if (!imageBase64) {
+        return res.status(400).json({ error: 'No se recibió imagen' });
+    }
+
+    const prompt = `Analiza esta imagen de una cartola bancaria y extrae TODOS los movimientos visibles en la tabla.
+
+Devuélveme EXCLUSIVAMENTE un JSON con esta estructura exacta (sin markdown, sin explicaciones, solo el JSON puro):
+
+{
+  "movimientos": [
+    {
+      "fecha": "dd/mm/aaaa",
+      "comentario": "descripción del movimiento",
+      "tipo": "CARGO|CHEQUE|ABONO|DEPOSITO",
+      "numero_mov": "número",
+      "monto": 12345,
+      "saldo_despues": 123456
+    }
+  ]
+}
+
+INSTRUCCIONES CRÍTICAS:
+
+1. La tabla tiene DOS COLUMNAS de montos separadas: "Cargos (CLP)" y "Abonos (CLP)".
+   - Lee CUIDADOSAMENTE en qué columna está cada monto.
+   - Si el monto está en la columna Cargos → tipo = "CARGO" (o "CHEQUE" si es cheque)
+   - Si el monto está en la columna Abonos → tipo = "ABONO" (o "DEPOSITO")
+   - "TRASPASO A..." o "PAGO A..." generalmente son CARGOS (salida)
+   - "TRASPASO DESDE...", "TRASPASO DE..." o "PAGO RECIBIDO" generalmente son ABONOS (entrada)
+
+2. ABONOS (entradas): tipo = "ABONO", numero_mov = "1"
+
+3. CARGOS (salidas):
+   - tipo = "CARGO", numero_mov = "2" (99% de los casos)
+   - Si es CHEQUE: tipo = "CHEQUE", numero_mov = número del cheque
+
+4. DEPÓSITOS: tipo = "DEPOSITO", numero_mov = "1"
+
+5. Fecha: formato dd/mm/aaaa
+
+6. Monto: número entero SIN decimales, SIN puntos de miles, SIN símbolos de moneda.
+
+7. saldo_despues: saldo que aparece en la columna "Saldo (CLP)" DESPUÉS de este movimiento. Número entero sin decimales.
+
+8. No incluyas totales ni resúmenes. Solo filas individuales de la tabla.`;
+
+    try {
+        const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${apiKey}`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                contents: [{
+                    parts: [
+                        { text: prompt },
+                        { inlineData: { mimeType: 'image/png', data: imageBase64 } }
+                    ]
+                }],
+                generationConfig: { temperature: 0.1, maxOutputTokens: 4000 }
+            })
+        });
+
+        if (!response.ok) {
+            const errData = await response.json().catch(() => ({}));
+            return res.status(response.status).json({
+                error: errData.error?.message || `Error HTTP ${response.status}`
+            });
+        }
+
+        const data = await response.json();
+        const textPart = data.candidates?.[0]?.content?.parts?.[0]?.text || '';
+
+        // Extraer JSON
+        let jsonStr = textPart;
+        const jsonMatch = textPart.match(/\{[\s\S]*\}/);
+        if (jsonMatch) {
+            jsonStr = jsonMatch[0];
+        }
+
+        const parsed = JSON.parse(jsonStr);
+
+        // Normalizar a formato compatible con frontend
+        const normalized = {
+            choices: [{
+                message: {
+                    content: JSON.stringify(parsed)
+                }
+            }]
+        };
+
+        res.json(normalized);
+    } catch (error) {
+        console.error('Error Gemini:', error);
+        res.status(500).json({ error: error.message });
+    }
+});
+
 // Cualquier otra ruta sirve el index.html (SPA fallback)
 app.get('*', (req, res) => {
     res.sendFile(path.join(__dirname, 'index.html'));
