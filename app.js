@@ -716,6 +716,7 @@ function switchTool(toolId) {
 // ============================================================
 
 let cartolaImageData = null;
+let cartolaMimeType = 'image/png';
 
 function setupCartolaListeners() {
     const pasteArea = document.getElementById('cartola-paste-area');
@@ -754,13 +755,19 @@ function setupCartolaListeners() {
         e.preventDefault();
         pasteArea.classList.remove('dragover');
         const files = e.dataTransfer.files;
-        if (files.length > 0 && files[0].type.indexOf('image') !== -1) {
-            const reader = new FileReader();
-            reader.onload = function(event) {
-                cartolaImageData = event.target.result;
-                showCartolaImage(cartolaImageData);
-            };
-            reader.readAsDataURL(files[0]);
+        if (files.length > 0) {
+            const file = files[0];
+            const isImage = file.type.indexOf('image') !== -1;
+            const isPdf = file.type === 'application/pdf' || file.name.toLowerCase().endsWith('.pdf');
+            if (isImage || isPdf) {
+                cartolaMimeType = isPdf ? 'application/pdf' : (file.type || 'image/png');
+                const reader = new FileReader();
+                reader.onload = function(event) {
+                    cartolaImageData = event.target.result;
+                    showCartolaImage(cartolaImageData, isPdf);
+                };
+                reader.readAsDataURL(file);
+            }
         }
     });
 
@@ -769,14 +776,16 @@ function setupCartolaListeners() {
         if (e.target.id === 'cartola-preview' || cartolaImageData) return;
         const input = document.createElement('input');
         input.type = 'file';
-        input.accept = 'image/*';
+        input.accept = 'image/*,.pdf';
         input.onchange = function() {
             const file = this.files[0];
             if (file) {
+                const isPdf = file.type === 'application/pdf' || file.name.toLowerCase().endsWith('.pdf');
+                cartolaMimeType = isPdf ? 'application/pdf' : (file.type || 'image/png');
                 const reader = new FileReader();
                 reader.onload = function(event) {
                     cartolaImageData = event.target.result;
-                    showCartolaImage(cartolaImageData);
+                    showCartolaImage(cartolaImageData, isPdf);
                 };
                 reader.readAsDataURL(file);
             }
@@ -814,13 +823,17 @@ function setupCartolaListeners() {
     if (saldoFinalInput) saldoFinalInput.addEventListener('input', saveBalanceValidation);
 }
 
-function showCartolaImage(dataUrl) {
+function showCartolaImage(dataUrl, isPdf = false) {
     const preview = document.getElementById('cartola-preview');
     const placeholder = document.getElementById('cartola-paste-placeholder');
     const clearBtn = document.getElementById('clear-cartola-btn');
     const processBtn = document.getElementById('process-cartola-btn');
 
-    preview.src = dataUrl;
+    if (isPdf) {
+        preview.src = 'data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iMjAwIiBoZWlnaHQ9IjIwMCIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIj48cmVjdCB3aWR0aD0iMTAwJSIgaGVpZ2h0PSIxMDAlIiBmaWxsPSIjZTc0YzNjIi8+PHRleHQgeD0iNTAlIiB5PSI1MCUiIGZvbnQtZmFtaWx5PSJBcmlhbCIgZm9udC1zaXplPSI0MCIgZmlsbD0id2hpdGUiIHRleHQtYW5jaG9yPSJtaWRkbGUiIGR5PSIuM2VtIj5QREY8L3RleHQ+PC9zdmc+';
+    } else {
+        preview.src = dataUrl;
+    }
     preview.classList.remove('hidden');
     placeholder.classList.add('hidden');
     clearBtn.classList.remove('hidden');
@@ -836,6 +849,7 @@ function clearCartolaImage() {
     const status = document.getElementById('process-status');
 
     cartolaImageData = null;
+    cartolaMimeType = 'image/png';
     preview.src = '';
     preview.classList.add('hidden');
     placeholder.classList.remove('hidden');
@@ -911,7 +925,8 @@ async function processCartolaWithDeepSeek() {
                 'Content-Type': 'application/json'
             },
             body: JSON.stringify({
-                imageBase64: base64Image
+                imageBase64: base64Image,
+                mimeType: cartolaMimeType
             })
         });
 

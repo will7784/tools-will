@@ -77,10 +77,12 @@ app.post('/api/analyze-cartola', async (req, res) => {
         return res.status(500).json({ error: 'DEEPSEEK_API_KEY no está configurada en las variables de entorno' });
     }
 
-    const { imageBase64 } = req.body;
+    const { imageBase64, mimeType } = req.body;
     if (!imageBase64) {
-        return res.status(400).json({ error: 'No se recibió imagen' });
+        return res.status(400).json({ error: 'No se recibió archivo' });
     }
+
+    const finalMimeType = mimeType || 'image/png';
 
     return res.status(400).json({ error: 'Este endpoint legacy requiere un modelo con visión. Usa /api/analyze-cartola-text en su lugar.' });
 });
@@ -194,7 +196,7 @@ INSTRUCCIONES CRÍTICAS:
                 contents: [{
                     parts: [
                         { text: prompt },
-                        { inlineData: { mimeType: 'image/png', data: imageBase64 } }
+                        { inlineData: { mimeType: finalMimeType, data: imageBase64 } }
                     ]
                 }],
                 generationConfig: { temperature: 0.1, maxOutputTokens: 4000 }
