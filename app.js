@@ -721,15 +721,7 @@ function setupCartolaListeners() {
     const pasteArea = document.getElementById('cartola-paste-area');
     const clearBtn = document.getElementById('clear-cartola-btn');
     const processBtn = document.getElementById('process-cartola-btn');
-    const saveApiKeyBtn = document.getElementById('save-apikey-btn');
-    const apiKeyInput = document.getElementById('deepseek-apikey');
     const copyResultBtn = document.getElementById('copy-result-btn');
-
-    // Cargar API key guardada
-    const savedKey = localStorage.getItem('deepseek-apikey') || (typeof DEEPSEEK_API_KEY !== 'undefined' ? DEEPSEEK_API_KEY : '');
-    if (savedKey) {
-        apiKeyInput.value = savedKey;
-    }
 
     // Pegar imagen
     pasteArea.addEventListener('paste', function(e) {
@@ -799,17 +791,6 @@ function setupCartolaListeners() {
 
     processBtn.addEventListener('click', processCartolaWithDeepSeek);
 
-    saveApiKeyBtn.addEventListener('click', function() {
-        const key = apiKeyInput.value.trim();
-        if (key) {
-            localStorage.setItem('deepseek-apikey', key);
-            alert('API Key guardada correctamente.');
-        } else {
-            localStorage.removeItem('deepseek-apikey');
-            alert('API Key eliminada.');
-        }
-    });
-
     copyResultBtn.addEventListener('click', function() {
         const textarea = document.getElementById('cartola-result');
         textarea.select();
@@ -854,16 +835,11 @@ function clearCartolaImage() {
 }
 
 async function processCartolaWithDeepSeek() {
-    const apiKey = document.getElementById('deepseek-apikey').value.trim();
     const status = document.getElementById('process-status');
     const processBtn = document.getElementById('process-cartola-btn');
     const resultSection = document.getElementById('result-section');
     const resultTextarea = document.getElementById('cartola-result');
 
-    if (!apiKey) {
-        alert('Por favor ingresa tu API Key de DeepSeek.');
-        return;
-    }
     if (!cartolaImageData) {
         alert('Por favor pega una imagen de cartola primero.');
         return;
@@ -871,79 +847,26 @@ async function processCartolaWithDeepSeek() {
 
     processBtn.disabled = true;
     processBtn.innerHTML = '<span>⏳</span> Analizando...';
-    status.textContent = 'Enviando imagen a DeepSeek, esto puede tardar unos segundos...';
+    status.textContent = 'Enviando imagen al servidor, esto puede tardar unos segundos...';
     status.className = 'process-status info';
     resultSection.classList.add('hidden');
 
     try {
         const base64Image = cartolaImageData.split(',')[1];
 
-        const prompt = `Analiza esta imagen de una cartola bancaria y extrae TODOS los movimientos visibles.
-
-Devuélveme EXCLUSIVAMENTE un JSON con esta estructura exacta (sin markdown, sin explicaciones, solo el JSON puro):
-
-{
-  "movimientos": [
-    {
-      "fecha": "dd/mm/aaaa",
-      "comentario": "descripción del movimiento",
-      "tipo": "CARGO|CHEQUE|ABONO|DEPOSITO",
-      "numero_mov": "número",
-      "monto": 12345.67
-    }
-  ]
-}
-
-REGLAS CRÍTICAS PARA DETERMINAR tipo Y numero_mov:
-
-1. ABONOS (entradas de dinero):
-   - Siempre tipo = "ABONO" y numero_mov = "1"
-
-2. CARGOS (salidas de dinero):
-   - En el 99% de los casos: tipo = "CARGO" y numero_mov = "2"
-   - PERO si en la columna de cargos detectas explícitamente la palabra "CHEQUE" o "CHQ" o similar, entonces:
-     * tipo = "CHEQUE"
-     * numero_mov = el número de documento/cheque que aparece (ej: "12345")
-     * Si no hay número visible, usa "0"
-   - Si es una transferencia u otro cargo normal: tipo = "CARGO", numero_mov = "2"
-
-3. DEPÓSITOS:
-   - tipo = "DEPOSITO"
-   - numero_mov = número de documento si está visible, si no "1"
-
-4. Fecha: devuélvela siempre en formato dd/mm/aaaa. Si el año no está visible, usa el año actual.
-
-5. Monto: número decimal con punto como separador (ej: 15000.50). Sin símbolos de moneda.
-
-6. Comentario: descripción completa del movimiento como aparece en la cartola.
-
-7. No incluyas totales, saldos ni resúmenes. Solo movimientos individuales de la tabla.`;
-
-        const response = await fetch('https://api.deepseek.com/chat/completions', {
+        const response = await fetch('/api/analyze-cartola', {
             method: 'POST',
             headers: {
-                'Content-Type': 'application/json',
-                'Authorization': `Bearer ${apiKey}`
+                'Content-Type': 'application/json'
             },
             body: JSON.stringify({
-                model: 'deepseek-chat',
-                messages: [
-                    {
-                        role: 'user',
-                        content: [
-                            { type: 'text', text: prompt },
-                            { type: 'image_url', image_url: { url: `data:image/png;base64,${base64Image}` } }
-                        ]
-                    }
-                ],
-                temperature: 0.1,
-                max_tokens: 4000
+                imageBase64: base64Image
             })
         });
 
         if (!response.ok) {
             const errData = await response.json().catch(() => ({}));
-            throw new Error(errData.error?.message || `Error HTTP ${response.status}`);
+            throw new Error(errData.error || `Error HTTP ${response.status}`);
         }
 
         const data = await response.json();

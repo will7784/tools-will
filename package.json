@@ -1,0 +1,16 @@
+{
+  "name": "tools-will",
+  "version": "1.0.0",
+  "description": "Herramientas para Will - Imágenes a PDF e importador de cartolas bancarias",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node server.js"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "dependencies": {
+    "express": "^4.19.2"
+  }
+}
