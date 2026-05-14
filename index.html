@@ -135,6 +135,26 @@
                             <div class="result-info">
                                 <span class="form-help">Formato: Fecha;Comentario;Tipo Mov.;Nº Mov.;Monto</span>
                             </div>
+
+                            <!-- Validación de Saldo -->
+                            <div class="balance-validation" id="balance-validation">
+                                <h4>🔍 Validación de Saldo</h4>
+                                <div class="balance-inputs">
+                                    <div class="form-group">
+                                        <label for="saldo-inicial">Saldo Inicial:</label>
+                                        <input type="text" id="saldo-inicial" placeholder="Ej: 5.117.154" inputmode="numeric">
+                                    </div>
+                                    <div class="form-group">
+                                        <label for="saldo-final">Saldo Final (según cartola):</label>
+                                        <input type="text" id="saldo-final" placeholder="Ej: 3.733.053" inputmode="numeric">
+                                    </div>
+                                    <div class="balance-actions">
+                                        <button id="validate-balance-btn" class="btn-primary">Validar</button>
+                                        <button id="clear-validation-btn" class="btn-secondary">Limpiar</button>
+                                    </div>
+                                </div>
+                                <div id="balance-result" class="balance-result hidden"></div>
+                            </div>
                         </div>
                     </div>
                 </div>

@@ -801,6 +801,17 @@ function setupCartolaListeners() {
             copyResultBtn.textContent = originalText;
         }, 2000);
     });
+
+    // Validación de saldos
+    const validateBtn = document.getElementById('validate-balance-btn');
+    const clearValidationBtn = document.getElementById('clear-validation-btn');
+    const saldoInicialInput = document.getElementById('saldo-inicial');
+    const saldoFinalInput = document.getElementById('saldo-final');
+
+    if (validateBtn) validateBtn.addEventListener('click', calculateAndValidateBalance);
+    if (clearValidationBtn) clearValidationBtn.addEventListener('click', clearBalanceValidation);
+    if (saldoInicialInput) saldoInicialInput.addEventListener('input', saveBalanceValidation);
+    if (saldoFinalInput) saldoFinalInput.addEventListener('input', saveBalanceValidation);
 }
 
 function showCartolaImage(dataUrl) {
@@ -917,24 +928,25 @@ async function processCartolaWithDeepSeek() {
             throw new Error('No se encontraron movimientos en la respuesta. Intenta con una imagen más clara.');
         }
 
-        // Formatear resultado para Kame ERP
+        // Formatear resultado para Kame ERP (sin encabezado, montos enteros)
         const lines = parsed.movimientos.map(mov => {
             const fecha = mov.fecha || '';
             const comentario = (mov.comentario || '').replace(/;/g, ',');
             const tipo = mov.tipo || 'CARGO';
             const numero = mov.numero_mov || '2';
-            const monto = typeof mov.monto === 'number' ? mov.monto.toFixed(2).replace(/\./g, ',') : (mov.monto || '0');
-            return `${fecha};${comentario};${tipo};${numero};${monto}`;
+            const montoEntero = typeof mov.monto === 'number' ? Math.round(mov.monto) : (parseInt(mov.monto) || 0);
+            return `${fecha};${comentario};${tipo};${numero};${montoEntero}`;
         });
 
-        // Encabezado
-        const header = 'Fecha;Comentario;Tipo Mov.;Nº Mov.;Monto';
-        const output = [header, ...lines].join('\n');
+        const output = lines.join('\n');
 
         resultTextarea.value = output;
         resultSection.classList.remove('hidden');
         status.textContent = `✅ ${parsed.movimientos.length} movimientos extraídos correctamente.`;
         status.className = 'process-status success';
+
+        // Restaurar valores de validación si existen
+        restoreBalanceValidation();
 
     } catch (error) {
         console.error('Error procesando cartola:', error);
@@ -944,4 +956,136 @@ async function processCartolaWithDeepSeek() {
         processBtn.disabled = false;
         processBtn.innerHTML = '<span>🔍</span> Analizar cartola con DeepSeek';
     }
+}
+
+// ============================================================
+// VALIDACIÓN DE SALDO
+// ============================================================
+
+function calculateAndValidateBalance() {
+    const resultTextarea = document.getElementById('cartola-result');
+    const saldoInicialInput = document.getElementById('saldo-inicial');
+    const saldoFinalInput = document.getElementById('saldo-final');
+    const resultDiv = document.getElementById('balance-result');
+
+    const text = resultTextarea.value.trim();
+    if (!text) {
+        alert('No hay movimientos para validar.');
+        return;
+    }
+
+    const saldoInicial = parseFloat(saldoInicialInput.value.replace(/\./g, '').replace(/,/g, '.')) || 0;
+    const saldoFinalEsperado = parseFloat(saldoFinalInput.value.replace(/\./g, '').replace(/,/g, '.')) || 0;
+
+    let totalAbonos = 0;
+    let totalCargos = 0;
+    let totalCheques = 0;
+    let totalDepositos = 0;
+    let lineCount = 0;
+
+    const lines = text.split('\n');
+    for (const line of lines) {
+        if (!line.trim() || line.includes('Fecha') && line.includes('Comentario')) continue;
+        const parts = line.split(';');
+        if (parts.length < 5) continue;
+
+        const tipo = parts[2]?.trim().toUpperCase();
+        const montoStr = parts[4]?.trim().replace(/\./g, '').replace(/,/g, '.');
+        const monto = parseFloat(montoStr) || 0;
+        lineCount++;
+
+        if (tipo === 'ABONO') totalAbonos += monto;
+        else if (tipo === 'CARGO') totalCargos += monto;
+        else if (tipo === 'CHEQUE') totalCheques += monto;
+        else if (tipo === 'DEPOSITO') totalDepositos += monto;
+    }
+
+    const ingresos = totalAbonos + totalDepositos;
+    const egresos = totalCargos + totalCheques;
+    const saldoCalculado = saldoInicial + ingresos - egresos;
+    const diferencia = saldoFinalEsperado - saldoCalculado;
+    const cuadra = Math.abs(diferencia) < 1;
+
+    const format = n => n.toLocaleString('es-CL', { maximumFractionDigits: 0 });
+
+    resultDiv.innerHTML = `
+        <div class="balance-grid">
+            <div class="balance-item">
+                <span class="balance-label">Movimientos:</span>
+                <span class="balance-value">${lineCount}</span>
+            </div>
+            <div class="balance-item">
+                <span class="balance-label">Saldo Inicial:</span>
+                <span class="balance-value">$ ${format(saldoInicial)}</span>
+            </div>
+            <div class="balance-item income">
+                <span class="balance-label">+ Abonos:</span>
+                <span class="balance-value">$ ${format(totalAbonos)}</span>
+            </div>
+            <div class="balance-item income">
+                <span class="balance-label">+ Depósitos:</span>
+                <span class="balance-value">$ ${format(totalDepositos)}</span>
+            </div>
+            <div class="balance-item expense">
+                <span class="balance-label">- Cargos:</span>
+                <span class="balance-value">$ ${format(totalCargos)}</span>
+            </div>
+            <div class="balance-item expense">
+                <span class="balance-label">- Cheques:</span>
+                <span class="balance-value">$ ${format(totalCheques)}</span>
+            </div>
+            <div class="balance-item total">
+                <span class="balance-label">Saldo Calculado:</span>
+                <span class="balance-value">$ ${format(saldoCalculado)}</span>
+            </div>
+            <div class="balance-item ${cuadra ? 'success' : 'error'}">
+                <span class="balance-label">Diferencia:</span>
+                <span class="balance-value">$ ${format(Math.abs(diferencia))}</span>
+            </div>
+            <div class="balance-item ${cuadra ? 'success' : 'error'}">
+                <span class="balance-label">Estado:</span>
+                <span class="balance-value">${cuadra ? '✅ CUADRA' : '❌ NO CUADRA'}</span>
+            </div>
+        </div>
+    `;
+    resultDiv.classList.remove('hidden');
+
+    // Guardar en localStorage
+    saveBalanceValidation();
+}
+
+function saveBalanceValidation() {
+    const saldoInicial = document.getElementById('saldo-inicial')?.value || '';
+    const saldoFinal = document.getElementById('saldo-final')?.value || '';
+    const resultText = document.getElementById('cartola-result')?.value || '';
+    localStorage.setItem('cartola-balance', JSON.stringify({ saldoInicial, saldoFinal, resultText }));
+}
+
+function restoreBalanceValidation() {
+    const saved = localStorage.getItem('cartola-balance');
+    if (!saved) return;
+    try {
+        const data = JSON.parse(saved);
+        if (data.saldoInicial) document.getElementById('saldo-inicial').value = data.saldoInicial;
+        if (data.saldoFinal) document.getElementById('saldo-final').value = data.saldoFinal;
+        if (data.resultText) {
+            const currentText = document.getElementById('cartola-result').value;
+            if (currentText && currentText !== data.resultText) {
+                // Si hay nuevo resultado, limpiar validación anterior
+                localStorage.removeItem('cartola-balance');
+                document.getElementById('saldo-inicial').value = '';
+                document.getElementById('saldo-final').value = '';
+                document.getElementById('balance-result').classList.add('hidden');
+            }
+        }
+    } catch (e) {
+        console.error('Error restoring balance:', e);
+    }
+}
+
+function clearBalanceValidation() {
+    localStorage.removeItem('cartola-balance');
+    document.getElementById('saldo-inicial').value = '';
+    document.getElementById('saldo-final').value = '';
+    document.getElementById('balance-result').classList.add('hidden');
 }
