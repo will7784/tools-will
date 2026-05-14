@@ -8,19 +8,13 @@ app.use(express.json({ limit: '10mb' }));
 // Servir archivos estáticos del frontend
 app.use(express.static(path.join(__dirname)));
 
-// Proxy para analizar cartola con DeepSeek
-app.post('/api/analyze-cartola', async (req, res) => {
-    const apiKey = process.env.DEEPSEEK_API_KEY;
-    if (!apiKey) {
-        return res.status(500).json({ error: 'DEEPSEEK_API_KEY no está configurada en las variables de entorno' });
-    }
+function buildPrompt(ocrText) {
+    return `A continuación te paso el texto extraído por OCR de una cartola bancaria. Tu tarea es analizarlo y extraer TODOS los movimientos individuales.
 
-    const { imageBase64 } = req.body;
-    if (!imageBase64) {
-        return res.status(400).json({ error: 'No se recibió imagen' });
-    }
-
-    const prompt = `Analiza esta imagen de una cartola bancaria y extrae TODOS los movimientos visibles.
+TEXTO OCR EXTRAÍDO:
+---
+${ocrText}
+---
 
 Devuélveme EXCLUSIVAMENTE un JSON con esta estructura exacta (sin markdown, sin explicaciones, solo el JSON puro):
 
@@ -43,7 +37,7 @@ REGLAS CRÍTICAS PARA DETERMINAR tipo Y numero_mov:
 
 2. CARGOS (salidas de dinero):
    - En el 99% de los casos: tipo = "CARGO" y numero_mov = "2"
-   - PERO si en la columna de cargos detectas explícitamente la palabra "CHEQUE" o "CHQ" o similar, entonces:
+   - PERO si detectas explícitamente la palabra "CHEQUE" o "CHQ" o similar en la descripción o en la columna de cargo, entonces:
      * tipo = "CHEQUE"
      * numero_mov = el número de documento/cheque que aparece (ej: "12345")
      * Si no hay número visible, usa "0"
@@ -53,13 +47,43 @@ REGLAS CRÍTICAS PARA DETERMINAR tipo Y numero_mov:
    - tipo = "DEPOSITO"
    - numero_mov = número de documento si está visible, si no "1"
 
-4. Fecha: devuélvela siempre en formato dd/mm/aaaa. Si el año no está visible, usa el año actual.
+4. Fecha: devuélvela siempre en formato dd/mm/aaaa. Si el año no está visible, infiere el año actual.
 
-5. Monto: número decimal con punto como separador (ej: 15000.50). Sin símbolos de moneda.
+5. Monto: número decimal con punto como separador (ej: 15000.50). Sin símbolos de moneda. Si el OCR trajo comas o puntos mezclados, corrígelo.
 
-6. Comentario: descripción completa del movimiento como aparece en la cartola.
+6. Comentario: descripción completa del movimiento.
 
-7. No incluyas totales, saldos ni resúmenes. Solo movimientos individuales de la tabla.`;
+7. No incluyas totales, saldos ni resúmenes. Solo movimientos individuales.
+
+8. Si el texto OCR está desordenado o tiene errores, infiere lo mejor posible basándote en el contexto.`;
+}
+
+// Proxy para analizar cartola con DeepSeek (modo imagen - legacy)
+app.post('/api/analyze-cartola', async (req, res) => {
+    const apiKey = process.env.DEEPSEEK_API_KEY;
+    if (!apiKey) {
+        return res.status(500).json({ error: 'DEEPSEEK_API_KEY no está configurada en las variables de entorno' });
+    }
+
+    const { imageBase64 } = req.body;
+    if (!imageBase64) {
+        return res.status(400).json({ error: 'No se recibió imagen' });
+    }
+
+    return res.status(400).json({ error: 'Este endpoint legacy requiere un modelo con visión. Usa /api/analyze-cartola-text en su lugar.' });
+});
+
+// Proxy para analizar cartola con DeepSeek (modo texto OCR)
+app.post('/api/analyze-cartola-text', async (req, res) => {
+    const apiKey = process.env.DEEPSEEK_API_KEY;
+    if (!apiKey) {
+        return res.status(500).json({ error: 'DEEPSEEK_API_KEY no está configurada en las variables de entorno' });
+    }
+
+    const { text } = req.body;
+    if (!text || text.trim().length < 10) {
+        return res.status(400).json({ error: 'No se recibió texto OCR válido' });
+    }
 
     try {
         const response = await fetch('https://api.deepseek.com/chat/completions', {
@@ -73,10 +97,7 @@ REGLAS CRÍTICAS PARA DETERMINAR tipo Y numero_mov:
                 messages: [
                     {
                         role: 'user',
-                        content: [
-                            { type: 'text', text: prompt },
-                            { type: 'image_url', image_url: { url: `data:image/png;base64,${imageBase64}` } }
-                        ]
+                        content: buildPrompt(text)
                     }
                 ],
                 temperature: 0.1,

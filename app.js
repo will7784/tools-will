@@ -847,20 +847,46 @@ async function processCartolaWithDeepSeek() {
 
     processBtn.disabled = true;
     processBtn.innerHTML = '<span>⏳</span> Analizando...';
-    status.textContent = 'Enviando imagen al servidor, esto puede tardar unos segundos...';
+    status.textContent = 'Extrayendo texto de la imagen con OCR...';
     status.className = 'process-status info';
     resultSection.classList.add('hidden');
 
+    let ocrText = '';
     try {
-        const base64Image = cartolaImageData.split(',')[1];
+        const result = await Tesseract.recognize(
+            cartolaImageData,
+            'spa',
+            {
+                logger: m => {
+                    if (m.status === 'recognizing text') {
+                        status.textContent = `Extrayendo texto con OCR... ${Math.round(m.progress * 100)}%`;
+                    }
+                }
+            }
+        );
+        ocrText = result.data.text;
+        if (!ocrText || ocrText.trim().length < 20) {
+            throw new Error('No se pudo extraer texto legible de la imagen. Intenta con una imagen más nítida.');
+        }
+    } catch (ocrError) {
+        console.error('Error OCR:', ocrError);
+        status.textContent = `❌ Error OCR: ${ocrError.message}`;
+        status.className = 'process-status error';
+        processBtn.disabled = false;
+        processBtn.innerHTML = '<span>🔍</span> Analizar cartola con DeepSeek';
+        return;
+    }
 
-        const response = await fetch('/api/analyze-cartola', {
+    status.textContent = 'Enviando texto extraído a DeepSeek...';
+
+    try {
+        const response = await fetch('/api/analyze-cartola-text', {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json'
             },
             body: JSON.stringify({
-                imageBase64: base64Image
+                text: ocrText
             })
         });
 
