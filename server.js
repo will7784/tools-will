@@ -18,34 +18,40 @@ app.use(express.json({ limit: '50mb' }));
 app.use(express.static(path.join(__dirname)));
 
 function buildPrompt(ocrText) {
-    return `Eres un extractor de datos tabulares. NO razones sobre dirección del dinero. Solo extrae los números del texto OCR.
+    return `Eres un extractor de datos tabulares. Tu tarea es convertir texto OCR de una cartola bancaria en datos estructurados.
 
-TEXTO OCR:
+TEXTO OCR EXTRAÍDO:
 ---
 ${ocrText}
 ---
 
-La cartola tiene estas columnas:
-1. FECHA
-2. DESCRIPCIÓN
-3. SUCURSAL
-4. N° DOCTO
-5. CARGOS (montos de salida)
-6. ABONOS (montos de entrada)
-7. SALDO
+ESTRUCTURA DE LA CARTOLA (Banco de Chile):
+Cada fila tiene: FECHA | DESCRIPCION | SUCURSAL | N° DOCTO | CARGOS | ABONOS | SALDO
 
-REGLAS:
-- Extrae cada fila como un objeto con: fecha, comentario, monto_cargo, monto_abono, saldo_despues.
-- monto_cargo = número entero de la columna 5 (o 0 si está vacía)
-- monto_abono = número entero de la columna 6 (o 0 si está vacía)
-- saldo_despues = número entero de la columna 7
-- Quitar puntos de miles. Ej: 1.274.944 → 1274944
-- NO uses la descripción para decidir cargo/abono. Solo usa la columna numérica.
+INSTRUCCIONES PARA INTERPRETAR EL TEXTO OCR:
+1. El texto OCR puede tener los números desalineados o en líneas mezcladas. Tú debes reconstruir las filas lógicas.
+2. Identifica la FECHA al inicio de cada línea (formato dd/mm).
+3. La DESCRIPCIÓN es el texto que sigue a la fecha (ej: "CARGO SEGURO", "TRASPASO DE:...", "APP-TRASPASO A:...").
+4. Los NÚMEROS que aparecen después de la descripción son: CARGOS (salidas), ABONOS (entradas) y SALDO.
+5. REGLA CRÍTICA para separar CARGOS vs ABONOS:
+   - Lee el texto de la descripción. Si contiene "TRASPASO DE:" o "TRASPASO DE ", el monto principal es un ABONO (entrada).
+   - Si contiene "TRASPASO A:" o "APP-TRASPASO A:", el monto principal es un CARGO (salida).
+   - Si contiene "CARGO SEGURO" o "PAGO EN SII" o "PAGO AUTOMATICO", es un CARGO (salida).
+   - Si contiene "PAGO:PROVEEDORES", es un ABONO (entrada, depósito de proveedores).
+   - Si la descripción NO dice nada específico, observa el orden de los números: el primer número grande después de la descripción suele ser el monto del movimiento, y el último número de la línea es el SALDO.
 
-FORMATO:
+6. Para cada fila, determina:
+   - monto_cargo: el monto si es una salida de dinero (si no, 0)
+   - monto_abono: el monto si es una entrada de dinero (si no, 0)
+   - saldo_despues: el saldo final que aparece al final de la fila
+
+FORMATO DE SALIDA:
 {"movimientos":[{"fecha":"dd/mm/aaaa","comentario":"...","monto_cargo":0,"monto_abono":1274944,"saldo_despues":123456}]}
 
-Solo devuelve el JSON puro. Sin markdown, sin explicaciones.`;
+- Quita puntos de miles. Ej: 1.274.944 → 1274944
+- Si el año no aparece, usa 2026.
+- No incluyas filas de "SALDO INICIAL" o "SALDO FINAL".
+- Solo devuelve el JSON puro. Sin markdown, sin explicaciones.`;
 }
 
 // Proxy para analizar cartola con DeepSeek (modo imagen - legacy)
