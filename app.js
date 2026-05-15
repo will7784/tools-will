@@ -1087,34 +1087,45 @@ async function processCartolaWithDeepSeek() {
 
     processBtn.disabled = true;
     processBtn.innerHTML = '<span>⏳</span> Analizando...';
-    status.textContent = 'Preparando imagen...';
+    status.textContent = 'Preparando...';
     status.className = 'process-status info';
     resultSection.classList.add('hidden');
 
+    // MÉTODO 1: OCR + DeepSeek (más preciso para tablas del Banco de Chile)
     try {
-        // Determinar qué imagen enviar: preprocesada o original
+        status.textContent = '🔍 Paso 1/2: OCR local + DeepSeek...';
+        await tryOCRFallback(resultTextarea, resultSection, status);
+        // Si llegó aquí, OCR funcionó. Validamos que tengamos suficientes movimientos.
+        const lines = resultTextarea.value.trim().split('\n').filter(l => l.trim());
+        if (lines.length >= 3) {
+            status.textContent = `✅ ${lines.length} movimientos extraídos vía OCR + DeepSeek.`;
+            status.className = 'process-status success';
+            processBtn.disabled = false;
+            processBtn.innerHTML = '<span>🔍</span> Analizar cartola';
+            return; // Éxito, no necesitamos visión
+        }
+        console.warn('OCR devolvió muy pocos movimientos, intentando visión...');
+    } catch (ocrError) {
+        console.warn('OCR + DeepSeek falló:', ocrError);
+    }
+
+    // MÉTODO 2: Visión directa (fallback si OCR no funciona bien)
+    try {
+        status.textContent = '🔍 Paso 2/2: Visión directa con IA...';
         let imageToSend = cartolaImageData;
         let mimeToSend = cartolaMimeType;
 
         if (useProcessedImage && cartolaProcessedData && cartolaMimeType !== 'application/pdf') {
             imageToSend = cartolaProcessedData;
             mimeToSend = 'image/png';
-            status.textContent = 'Enviando imagen optimizada a la IA...';
-        } else {
-            status.textContent = 'Enviando imagen original a la IA...';
         }
 
         const base64Image = imageToSend.split(',')[1];
 
         const response = await fetch('/api/analyze-cartola-vision', {
             method: 'POST',
-            headers: {
-                'Content-Type': 'application/json'
-            },
-            body: JSON.stringify({
-                imageBase64: base64Image,
-                mimeType: mimeToSend
-            })
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ imageBase64: base64Image, mimeType: mimeToSend })
         });
 
         if (!response.ok) {
@@ -1124,37 +1135,25 @@ async function processCartolaWithDeepSeek() {
 
         const data = await response.json();
         const content = data.choices?.[0]?.message?.content || '';
-
-        // Extraer JSON de la respuesta
         let jsonStr = extractJsonFromContent(content);
 
         let parsed;
         try {
             parsed = JSON.parse(jsonStr);
         } catch (e) {
-            console.error('JSON parse error:', e, 'Content:', content);
-            throw new Error('La respuesta no es un JSON válido. Intenta de nuevo o revisa la imagen.');
+            throw new Error('La respuesta no es un JSON válido.');
         }
 
         if (!parsed.movimientos || !Array.isArray(parsed.movimientos)) {
-            throw new Error('No se encontraron movimientos en la respuesta. Intenta con una imagen más clara.');
+            throw new Error('No se encontraron movimientos.');
         }
 
         await handleParsedMovimientos(parsed.movimientos, resultTextarea, resultSection, status, 'IA de visión');
 
-    } catch (error) {
-        console.error('Error con visión directa:', error);
-        status.textContent = `⚠️ ${error.message}. Intentando con OCR local...`;
-        status.className = 'process-status info';
-
-        // Fallback: Tesseract.js + DeepSeek texto
-        try {
-            await tryOCRFallback(resultTextarea, resultSection, status);
-        } catch (ocrError) {
-            console.error('Error en fallback OCR:', ocrError);
-            status.textContent = `❌ Error: ${error.message}. Fallback OCR también falló: ${ocrError.message}`;
-            status.className = 'process-status error';
-        }
+    } catch (visionError) {
+        console.error('Error visión:', visionError);
+        status.textContent = `❌ Error: OCR y visión directa fallaron.`;
+        status.className = 'process-status error';
     } finally {
         processBtn.disabled = false;
         processBtn.innerHTML = '<span>🔍</span> Analizar cartola';
