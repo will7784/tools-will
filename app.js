@@ -877,13 +877,13 @@ function showCartolaImage(dataUrl, isPdf = false) {
     clearBtn.classList.remove('hidden');
     processBtn.disabled = false;
 
-    // Preprocesar imagen automáticamente si no es PDF
+    // Preprocesar imagen automáticamente si no es PDF (modo vision para LLM)
     if (!isPdf && dataUrl) {
-        preprocessImage(dataUrl).then(processed => {
+        preprocessImageForVision(dataUrl).then(processed => {
             cartolaProcessedData = processed;
             const viewBtn = document.getElementById('view-processed-btn');
             if (viewBtn) viewBtn.classList.remove('hidden');
-            console.log('Imagen preprocesada lista');
+            console.log('Imagen preprocesada lista (modo vision)');
         }).catch(err => {
             console.warn('Error en preprocesamiento:', err);
             cartolaProcessedData = null;
@@ -918,7 +918,7 @@ function clearCartolaImage() {
     if (viewProcessedBtn) viewProcessedBtn.classList.add('hidden');
 }
 
-async function preprocessImage(dataUrl) {
+async function preprocessImageForVision(dataUrl) {
     return new Promise((resolve, reject) => {
         const img = new Image();
         img.crossOrigin = 'anonymous';
@@ -926,8 +926,8 @@ async function preprocessImage(dataUrl) {
             const canvas = document.createElement('canvas');
             const ctx = canvas.getContext('2d');
 
-            // Upscale 2x para mejorar OCR de tablas pequeñas
-            const scale = 2;
+            // Upscale 3x para mejorar lectura de tablas pequeñas
+            const scale = 3;
             const w = img.width * scale;
             const h = img.height * scale;
             canvas.width = w;
@@ -948,13 +948,9 @@ async function preprocessImage(dataUrl) {
                 gray[j] = 0.299 * data[i] + 0.587 * data[i + 1] + 0.114 * data[i + 2];
             }
 
-            // Paso 2: Unsharp mask (sharpening) para resaltar bordes de texto
+            // Paso 2: Unsharp mask (sharpening) para resaltar bordes
             const sharpened = new Float32Array(w * h);
-            const kernel = [
-                0, -1, 0,
-                -1, 5, -1,
-                0, -1, 0
-            ];
+            const kernel = [0, -1, 0, -1, 5, -1, 0, -1, 0];
             for (let y = 1; y < h - 1; y++) {
                 for (let x = 1; x < w - 1; x++) {
                     let sum = 0;
@@ -966,7 +962,6 @@ async function preprocessImage(dataUrl) {
                     sharpened[y * w + x] = Math.max(0, Math.min(255, sum));
                 }
             }
-            // Copiar bordes
             for (let y = 0; y < h; y++) {
                 sharpened[y * w] = gray[y * w];
                 sharpened[y * w + (w - 1)] = gray[y * w + (w - 1)];
@@ -976,17 +971,80 @@ async function preprocessImage(dataUrl) {
                 sharpened[(h - 1) * w + x] = gray[(h - 1) * w + x];
             }
 
-            // Paso 3: Contraste adaptativo simple (mejora local)
-            const blockSize = 40; // Tamaño de ventana para adaptación
-            const halfBlock = blockSize / 2;
-            const result = new Uint8Array(w * h);
+            // Paso 3: Contraste global fuerte (NO binarizar - preserva info para LLM de visión)
+            const contrast = 2.0;
+            for (let i = 0, j = 0; i < len; i += 4, j++) {
+                let v = sharpened[j];
+                v = ((v - 128) * contrast) + 128;
+                v = Math.max(0, Math.min(255, v));
+                data[i] = v;
+                data[i + 1] = v;
+                data[i + 2] = v;
+            }
 
+            ctx.putImageData(imageData, 0, 0);
+            resolve(canvas.toDataURL('image/png'));
+        };
+        img.onerror = reject;
+        img.src = dataUrl;
+    });
+}
+
+async function preprocessImageForOCR(dataUrl) {
+    return new Promise((resolve, reject) => {
+        const img = new Image();
+        img.crossOrigin = 'anonymous';
+        img.onload = function() {
+            const canvas = document.createElement('canvas');
+            const ctx = canvas.getContext('2d');
+            const scale = 3;
+            const w = img.width * scale;
+            const h = img.height * scale;
+            canvas.width = w;
+            canvas.height = h;
+            ctx.fillStyle = '#FFFFFF';
+            ctx.fillRect(0, 0, w, h);
+            ctx.drawImage(img, 0, 0, w, h);
+
+            let imageData = ctx.getImageData(0, 0, w, h);
+            let data = imageData.data;
+            const len = data.length;
+
+            const gray = new Float32Array(w * h);
+            for (let i = 0, j = 0; i < len; i += 4, j++) {
+                gray[j] = 0.299 * data[i] + 0.587 * data[i + 1] + 0.114 * data[i + 2];
+            }
+
+            // Sharpening
+            const sharpened = new Float32Array(w * h);
+            const kernel = [0, -1, 0, -1, 5, -1, 0, -1, 0];
+            for (let y = 1; y < h - 1; y++) {
+                for (let x = 1; x < w - 1; x++) {
+                    let sum = 0;
+                    for (let ky = -1; ky <= 1; ky++) {
+                        for (let kx = -1; kx <= 1; kx++) {
+                            sum += gray[(y + ky) * w + (x + kx)] * kernel[(ky + 1) * 3 + (kx + 1)];
+                        }
+                    }
+                    sharpened[y * w + x] = Math.max(0, Math.min(255, sum));
+                }
+            }
+            for (let y = 0; y < h; y++) {
+                sharpened[y * w] = gray[y * w];
+                sharpened[y * w + (w - 1)] = gray[y * w + (w - 1)];
+            }
+            for (let x = 0; x < w; x++) {
+                sharpened[x] = gray[x];
+                sharpened[(h - 1) * w + x] = gray[(h - 1) * w + x];
+            }
+
+            // Threshold adaptativo para OCR puro
+            const blockSize = 40;
+            const halfBlock = blockSize / 2;
             for (let y = 0; y < h; y++) {
                 for (let x = 0; x < w; x++) {
                     const idx = y * w + x;
                     const val = sharpened[idx];
-
-                    // Calcular media local aproximada
                     let x0 = Math.max(0, x - halfBlock);
                     let x1 = Math.min(w, x + halfBlock);
                     let y0 = Math.max(0, y - halfBlock);
@@ -999,21 +1057,13 @@ async function preprocessImage(dataUrl) {
                         }
                     }
                     const localMean = sum / count;
-
-                    // Threshold adaptativo: si el pixel está por encima de la media local, blanco; si no, negro
-                    // Con un margen C para reducir ruido
                     const C = 8;
                     const threshold = localMean - C;
-                    result[idx] = val > threshold ? 255 : 0;
+                    const v = val > threshold ? 255 : 0;
+                    data[idx * 4] = v;
+                    data[idx * 4 + 1] = v;
+                    data[idx * 4 + 2] = v;
                 }
-            }
-
-            // Escribir de vuelta al canvas (RGB igual valor)
-            for (let i = 0, j = 0; i < len; i += 4, j++) {
-                const v = result[j];
-                data[i] = v;
-                data[i + 1] = v;
-                data[i + 2] = v;
             }
 
             ctx.putImageData(imageData, 0, 0);
@@ -1134,8 +1184,11 @@ function extractJsonFromContent(content) {
 }
 
 async function handleParsedMovimientos(movimientos, resultTextarea, resultSection, status, source) {
-    // Corregir tipos basándose en saldos
-    const corrected = correctMovementsByBalance(movimientos);
+    // Corrección en 2 pasadas:
+    // 1. Reglas de texto duras (TRASPASO A/DE, CARGO, PAGO, etc.)
+    // 2. Validación cruzada por saldos
+    let corrected = correctMovementsByTextRules(movimientos);
+    corrected = correctMovementsByBalance(corrected);
 
     // Formatear resultado para Kame ERP
     const lines = corrected.map(mov => {
@@ -1164,7 +1217,16 @@ async function tryOCRFallback(resultTextarea, resultSection, status) {
 
     status.textContent = '🔍 Ejecutando OCR local con Tesseract...';
 
-    const imageToOCR = (useProcessedImage && cartolaProcessedData) ? cartolaProcessedData : cartolaImageData;
+    // Para OCR puro usamos binarización adaptativa
+    let imageToOCR = cartolaImageData;
+    if (useProcessedImage) {
+        try {
+            imageToOCR = await preprocessImageForOCR(cartolaImageData);
+            status.textContent = '🔍 OCR local con imagen optimizada...';
+        } catch (e) {
+            console.warn('No se pudo preprocesar para OCR, usando original:', e);
+        }
+    }
 
     const result = await window.Tesseract.recognize(
         imageToOCR,
@@ -1220,64 +1282,112 @@ async function tryOCRFallback(resultTextarea, resultSection, status) {
 // VALIDACIÓN DE SALDO
 // ============================================================
 
+function correctMovementsByTextRules(movimientos) {
+    const corrected = [...movimientos];
+    for (let i = 0; i < corrected.length; i++) {
+        const mov = corrected[i];
+        const comentario = (mov.comentario || '').toUpperCase();
+        const tipo = (mov.tipo || '').toUpperCase();
+
+        // Reglas DURAS basadas en palabras clave del Banco de Chile
+        let forcedTipo = null;
+        let forcedNumero = null;
+
+        // --- ENTRADAS (ABONO) ---
+        if (comentario.includes('TRASPASO DE:') || comentario.includes('TRASPASO DE ')) {
+            forcedTipo = 'ABONO';
+            forcedNumero = '1';
+        }
+        // --- SALIDAS (CARGO) ---
+        else if (comentario.includes('APP-TRASPASO A:') || comentario.includes('TRASPASO A:') || comentario.includes('TRASPASO A ')) {
+            forcedTipo = 'CARGO';
+            forcedNumero = '2';
+        }
+        // CARGO SEGURO / CARGOS explícitos al inicio
+        else if (comentario.startsWith('CARGO ') || comentario.startsWith('APP-CARGO ')) {
+            forcedTipo = 'CARGO';
+            forcedNumero = '2';
+        }
+        // PAGOS que son salidas
+        else if (
+            (comentario.includes('PAGO EN ') || comentario.includes('PAGO AUTOMATICO') || comentario.includes('PAGO TARJETA')) &&
+            !comentario.includes('RECIBIDO') &&
+            !comentario.includes('PROVEEDORES')
+        ) {
+            forcedTipo = 'CARGO';
+            forcedNumero = '2';
+        }
+        // CHEQUES
+        else if (comentario.includes('CHEQUE') || comentario.includes('CHQ')) {
+            forcedTipo = 'CHEQUE';
+            forcedNumero = mov.numero_mov || '0';
+        }
+
+        if (forcedTipo && forcedTipo !== tipo) {
+            console.warn(`[Corrección texto] Fila ${i + 1}: "${mov.comentario}" cambiado de ${tipo} a ${forcedTipo}`);
+            mov.tipo = forcedTipo;
+            if (forcedNumero) mov.numero_mov = forcedNumero;
+        }
+    }
+    return corrected;
+}
+
 function correctMovementsByBalance(movimientos) {
-    if (!Array.isArray(movimientos) || movimientos.length < 2) return movimientos;
+    if (!Array.isArray(movimientos) || movimientos.length < 1) return movimientos;
 
     const corrected = [...movimientos];
 
     for (let i = 0; i < corrected.length; i++) {
         const mov = corrected[i];
-        const monto = typeof mov.monto === 'number' ? Math.round(mov.monto) : (parseInt(mov.monto) || 0);
+        let monto = typeof mov.monto === 'number' ? Math.round(mov.monto) : (parseInt(mov.monto) || 0);
         const saldoActual = typeof mov.saldo_despues === 'number' ? Math.round(mov.saldo_despues) : null;
         const saldoAnterior = i > 0
             ? (typeof corrected[i - 1].saldo_despues === 'number' ? Math.round(corrected[i - 1].saldo_despues) : null)
             : null;
 
-        // Si no hay saldos, no podemos corregir
-        if (saldoActual === null) continue;
-
         const tipo = (mov.tipo || '').toUpperCase();
-        let shouldBeCargo = false;
-
-        if (saldoAnterior !== null) {
-            const diff = saldoActual - saldoAnterior;
-            // Si el saldo subió, es entrada (abono/deposito)
-            // Si el saldo bajó, es salida (cargo/cheque)
-            if (Math.abs(diff) > 100 && Math.abs(Math.abs(diff) - monto) < Math.max(monto * 0.1, 1000)) {
-                shouldBeCargo = diff < 0;
-            }
-        }
-
-        // Corregir tipo basado en la variación de saldo
         const isExit = ['CARGO', 'CHEQUE'].includes(tipo);
         const isEntry = ['ABONO', 'DEPOSITO'].includes(tipo);
 
-        if (shouldBeCargo && isEntry) {
-            // Debería ser salida pero está marcado como entrada
-            if (tipo === 'ABONO' && mov.comentario && /cheque|chq/i.test(mov.comentario)) {
-                mov.tipo = 'CHEQUE';
-                mov.numero_mov = mov.numero_mov && mov.numero_mov !== '1' ? mov.numero_mov : '0';
-            } else {
-                mov.tipo = 'CARGO';
-                mov.numero_mov = '2';
+        // --- Corrección por saldo (más agresiva) ---
+        if (saldoAnterior !== null && saldoActual !== null) {
+            const diff = saldoActual - saldoAnterior;
+            const diffAbs = Math.abs(diff);
+
+            // Si el saldo subió > 100, DEBE ser entrada
+            if (diff > 100) {
+                if (isExit) {
+                    console.warn(`[Corrección saldo] Fila ${i + 1}: "${mov.comentario}" saldo subió ${diff} pero era ${tipo} → ABONO`);
+                    mov.tipo = 'ABONO';
+                    mov.numero_mov = '1';
+                }
+                // Si el monto está muy lejos del diff, corregirlo
+                if (diffAbs > 100 && (diffAbs < monto * 0.5 || diffAbs > monto * 1.5)) {
+                    console.warn(`[Corrección saldo] Fila ${i + 1}: monto ${monto} → ${diffAbs} (por saldo)`);
+                    mov.monto = diffAbs;
+                }
             }
-            console.warn(`[Corrección] Fila ${i + 1}: ${mov.comentario} cambiado de ${tipo} a ${mov.tipo} por saldo`);
-        } else if (!shouldBeCargo && isExit) {
-            // Debería ser entrada pero está marcado como salida
-            mov.tipo = 'ABONO';
-            mov.numero_mov = '1';
-            console.warn(`[Corrección] Fila ${i + 1}: ${mov.comentario} cambiado de ${tipo} a ABONO por saldo`);
+            // Si el saldo bajó > 100, DEBE ser salida
+            else if (diff < -100) {
+                if (isEntry) {
+                    console.warn(`[Corrección saldo] Fila ${i + 1}: "${mov.comentario}" saldo bajó ${diffAbs} pero era ${tipo} → CARGO`);
+                    mov.tipo = 'CARGO';
+                    mov.numero_mov = '2';
+                }
+                if (diffAbs > 100 && (diffAbs < monto * 0.5 || diffAbs > monto * 1.5)) {
+                    console.warn(`[Corrección saldo] Fila ${i + 1}: monto ${monto} → ${diffAbs} (por saldo)`);
+                    mov.monto = diffAbs;
+                }
+            }
         }
 
-        // Corrección de monto basado en diferencia de saldo
-        if (saldoAnterior !== null) {
-            const diff = Math.abs(saldoActual - saldoAnterior);
-            if (diff > 100 && Math.abs(diff - monto) > Math.max(monto * 0.05, 500)) {
-                // El monto no coincide con la variación de saldo
-                // Si el monto está muy lejos del diff, usar el diff como monto corregido
-                if (diff > monto * 1.5 || diff < monto * 0.5) {
-                    mov.monto = Math.round(diff);
-                    console.warn(`[Corrección] Fila ${i + 1}: monto ajustado de ${monto} a ${mov.monto} por saldo`);
+        // --- Corrección de monto por saldo para primera fila (si no hay saldo anterior) ---
+        if (i === 0 && saldoActual !== null && saldoAnterior === null && mov.saldo_inicial) {
+            const saldoInicial = typeof mov.saldo_inicial === 'number' ? Math.round(mov.saldo_inicial) : null;
+            if (saldoInicial !== null) {
+                const diff = Math.abs(saldoActual - saldoInicial);
+                if (diff > 100 && (diff < monto * 0.5 || diff > monto * 1.5)) {
+                    mov.monto = diff;
                 }
             }
         }
