@@ -716,7 +716,9 @@ function switchTool(toolId) {
 // ============================================================
 
 let cartolaImageData = null;
+let cartolaProcessedData = null;
 let cartolaMimeType = 'image/png';
+let useProcessedImage = true; // Por defecto usar imagen preprocesada
 
 function setupCartolaListeners() {
     const pasteArea = document.getElementById('cartola-paste-area');
@@ -821,6 +823,42 @@ function setupCartolaListeners() {
     if (clearValidationBtn) clearValidationBtn.addEventListener('click', clearBalanceValidation);
     if (saldoInicialInput) saldoInicialInput.addEventListener('input', saveBalanceValidation);
     if (saldoFinalInput) saldoFinalInput.addEventListener('input', saveBalanceValidation);
+
+    // Opciones de preprocesamiento
+    const useProcessedCheckbox = document.getElementById('use-processed-image');
+    const viewProcessedBtn = document.getElementById('view-processed-btn');
+    const closeProcessedModalBtn = document.getElementById('close-processed-modal');
+    const processedImageModal = document.getElementById('processed-image-modal');
+
+    if (useProcessedCheckbox) {
+        useProcessedImage = useProcessedCheckbox.checked;
+        useProcessedCheckbox.addEventListener('change', function() {
+            useProcessedImage = this.checked;
+        });
+    }
+
+    if (viewProcessedBtn) {
+        viewProcessedBtn.addEventListener('click', function() {
+            if (cartolaProcessedData) {
+                document.getElementById('processed-image-preview').src = cartolaProcessedData;
+                processedImageModal.classList.remove('hidden');
+            }
+        });
+    }
+
+    if (closeProcessedModalBtn) {
+        closeProcessedModalBtn.addEventListener('click', function() {
+            processedImageModal.classList.add('hidden');
+        });
+    }
+
+    if (processedImageModal) {
+        processedImageModal.addEventListener('click', function(e) {
+            if (e.target === processedImageModal) {
+                processedImageModal.classList.add('hidden');
+            }
+        });
+    }
 }
 
 function showCartolaImage(dataUrl, isPdf = false) {
@@ -838,6 +876,24 @@ function showCartolaImage(dataUrl, isPdf = false) {
     placeholder.classList.add('hidden');
     clearBtn.classList.remove('hidden');
     processBtn.disabled = false;
+
+    // Preprocesar imagen automáticamente si no es PDF
+    if (!isPdf && dataUrl) {
+        preprocessImage(dataUrl).then(processed => {
+            cartolaProcessedData = processed;
+            const viewBtn = document.getElementById('view-processed-btn');
+            if (viewBtn) viewBtn.classList.remove('hidden');
+            console.log('Imagen preprocesada lista');
+        }).catch(err => {
+            console.warn('Error en preprocesamiento:', err);
+            cartolaProcessedData = null;
+            const viewBtn = document.getElementById('view-processed-btn');
+            if (viewBtn) viewBtn.classList.add('hidden');
+        });
+    } else {
+        const viewBtn = document.getElementById('view-processed-btn');
+        if (viewBtn) viewBtn.classList.add('hidden');
+    }
 }
 
 function clearCartolaImage() {
@@ -847,8 +903,10 @@ function clearCartolaImage() {
     const processBtn = document.getElementById('process-cartola-btn');
     const resultSection = document.getElementById('result-section');
     const status = document.getElementById('process-status');
+    const viewProcessedBtn = document.getElementById('view-processed-btn');
 
     cartolaImageData = null;
+    cartolaProcessedData = null;
     cartolaMimeType = 'image/png';
     preview.src = '';
     preview.classList.add('hidden');
@@ -857,6 +915,7 @@ function clearCartolaImage() {
     processBtn.disabled = true;
     resultSection.classList.add('hidden');
     status.textContent = '';
+    if (viewProcessedBtn) viewProcessedBtn.classList.add('hidden');
 }
 
 async function preprocessImage(dataUrl) {
@@ -867,28 +926,94 @@ async function preprocessImage(dataUrl) {
             const canvas = document.createElement('canvas');
             const ctx = canvas.getContext('2d');
 
-            // Upscale 2x para mejorar OCR
+            // Upscale 2x para mejorar OCR de tablas pequeñas
             const scale = 2;
-            canvas.width = img.width * scale;
-            canvas.height = img.height * scale;
+            const w = img.width * scale;
+            const h = img.height * scale;
+            canvas.width = w;
+            canvas.height = h;
 
             // Fondo blanco
             ctx.fillStyle = '#FFFFFF';
-            ctx.fillRect(0, 0, canvas.width, canvas.height);
-            ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+            ctx.fillRect(0, 0, w, h);
+            ctx.drawImage(img, 0, 0, w, h);
 
-            const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
-            const data = imageData.data;
+            let imageData = ctx.getImageData(0, 0, w, h);
+            let data = imageData.data;
+            const len = data.length;
 
-            for (let i = 0; i < data.length; i += 4) {
-                // Grayscale
-                let gray = 0.299 * data[i] + 0.587 * data[i + 1] + 0.114 * data[i + 2];
-                // Aumentar contraste
-                const contrast = 1.8;
-                gray = ((gray - 128) * contrast) + 128;
-                // Threshold adaptativo simple
-                const final = gray > 200 ? 255 : (gray < 80 ? 0 : gray);
-                data[i] = data[i + 1] = data[i + 2] = final;
+            // Paso 1: Grayscale
+            const gray = new Float32Array(w * h);
+            for (let i = 0, j = 0; i < len; i += 4, j++) {
+                gray[j] = 0.299 * data[i] + 0.587 * data[i + 1] + 0.114 * data[i + 2];
+            }
+
+            // Paso 2: Unsharp mask (sharpening) para resaltar bordes de texto
+            const sharpened = new Float32Array(w * h);
+            const kernel = [
+                0, -1, 0,
+                -1, 5, -1,
+                0, -1, 0
+            ];
+            for (let y = 1; y < h - 1; y++) {
+                for (let x = 1; x < w - 1; x++) {
+                    let sum = 0;
+                    for (let ky = -1; ky <= 1; ky++) {
+                        for (let kx = -1; kx <= 1; kx++) {
+                            sum += gray[(y + ky) * w + (x + kx)] * kernel[(ky + 1) * 3 + (kx + 1)];
+                        }
+                    }
+                    sharpened[y * w + x] = Math.max(0, Math.min(255, sum));
+                }
+            }
+            // Copiar bordes
+            for (let y = 0; y < h; y++) {
+                sharpened[y * w] = gray[y * w];
+                sharpened[y * w + (w - 1)] = gray[y * w + (w - 1)];
+            }
+            for (let x = 0; x < w; x++) {
+                sharpened[x] = gray[x];
+                sharpened[(h - 1) * w + x] = gray[(h - 1) * w + x];
+            }
+
+            // Paso 3: Contraste adaptativo simple (mejora local)
+            const blockSize = 40; // Tamaño de ventana para adaptación
+            const halfBlock = blockSize / 2;
+            const result = new Uint8Array(w * h);
+
+            for (let y = 0; y < h; y++) {
+                for (let x = 0; x < w; x++) {
+                    const idx = y * w + x;
+                    const val = sharpened[idx];
+
+                    // Calcular media local aproximada
+                    let x0 = Math.max(0, x - halfBlock);
+                    let x1 = Math.min(w, x + halfBlock);
+                    let y0 = Math.max(0, y - halfBlock);
+                    let y1 = Math.min(h, y + halfBlock);
+                    let sum = 0, count = 0;
+                    for (let yy = y0; yy < y1; yy++) {
+                        for (let xx = x0; xx < x1; xx++) {
+                            sum += sharpened[yy * w + xx];
+                            count++;
+                        }
+                    }
+                    const localMean = sum / count;
+
+                    // Threshold adaptativo: si el pixel está por encima de la media local, blanco; si no, negro
+                    // Con un margen C para reducir ruido
+                    const C = 8;
+                    const threshold = localMean - C;
+                    result[idx] = val > threshold ? 255 : 0;
+                }
+            }
+
+            // Escribir de vuelta al canvas (RGB igual valor)
+            for (let i = 0, j = 0; i < len; i += 4, j++) {
+                const v = result[j];
+                data[i] = v;
+                data[i + 1] = v;
+                data[i + 2] = v;
             }
 
             ctx.putImageData(imageData, 0, 0);
@@ -912,12 +1037,24 @@ async function processCartolaWithDeepSeek() {
 
     processBtn.disabled = true;
     processBtn.innerHTML = '<span>⏳</span> Analizando...';
-    status.textContent = 'Leyendo información de la cartola...';
+    status.textContent = 'Preparando imagen...';
     status.className = 'process-status info';
     resultSection.classList.add('hidden');
 
     try {
-        const base64Image = cartolaImageData.split(',')[1];
+        // Determinar qué imagen enviar: preprocesada o original
+        let imageToSend = cartolaImageData;
+        let mimeToSend = cartolaMimeType;
+
+        if (useProcessedImage && cartolaProcessedData && cartolaMimeType !== 'application/pdf') {
+            imageToSend = cartolaProcessedData;
+            mimeToSend = 'image/png';
+            status.textContent = 'Enviando imagen optimizada a la IA...';
+        } else {
+            status.textContent = 'Enviando imagen original a la IA...';
+        }
+
+        const base64Image = imageToSend.split(',')[1];
 
         const response = await fetch('/api/analyze-cartola-vision', {
             method: 'POST',
@@ -926,7 +1063,7 @@ async function processCartolaWithDeepSeek() {
             },
             body: JSON.stringify({
                 imageBase64: base64Image,
-                mimeType: cartolaMimeType
+                mimeType: mimeToSend
             })
         });
 
@@ -938,34 +1075,8 @@ async function processCartolaWithDeepSeek() {
         const data = await response.json();
         const content = data.choices?.[0]?.message?.content || '';
 
-        // Extraer JSON de la respuesta (soporta markdown y texto extra)
-        let jsonStr = null;
-
-        // 1. Buscar bloque markdown ```json ... ```
-        const mdMatch = content.match(/```(?:json)?\s*([\s\S]*?)\s*```/);
-        if (mdMatch) {
-            jsonStr = mdMatch[1];
-        } else {
-            // 2. Buscar JSON con balance de llaves
-            let braceCount = 0;
-            let start = -1;
-            for (let i = 0; i < content.length; i++) {
-                if (content[i] === '{') {
-                    if (braceCount === 0) start = i;
-                    braceCount++;
-                } else if (content[i] === '}') {
-                    braceCount--;
-                    if (braceCount === 0 && start !== -1) {
-                        jsonStr = content.substring(start, i + 1);
-                        break;
-                    }
-                }
-            }
-        }
-
-        if (!jsonStr) {
-            jsonStr = content;
-        }
+        // Extraer JSON de la respuesta
+        let jsonStr = extractJsonFromContent(content);
 
         let parsed;
         try {
@@ -979,37 +1090,130 @@ async function processCartolaWithDeepSeek() {
             throw new Error('No se encontraron movimientos en la respuesta. Intenta con una imagen más clara.');
         }
 
-        // Corregir tipos basándose en saldos (si están disponibles)
-        const corrected = correctMovementsByBalance(parsed.movimientos);
-
-        // Formatear resultado para Kame ERP (sin encabezado, montos enteros)
-        const lines = corrected.map(mov => {
-            const fecha = mov.fecha || '';
-            const comentario = (mov.comentario || '').replace(/;/g, ',');
-            const tipo = mov.tipo || 'CARGO';
-            const numero = mov.numero_mov || '2';
-            const montoEntero = typeof mov.monto === 'number' ? Math.round(mov.monto) : (parseInt(mov.monto) || 0);
-            return `${fecha};${comentario};${tipo};${numero};${montoEntero}`;
-        });
-
-        const output = lines.join('\n');
-
-        resultTextarea.value = output;
-        resultSection.classList.remove('hidden');
-        status.textContent = `✅ ${corrected.length} movimientos extraídos correctamente.`;
-        status.className = 'process-status success';
-
-        // Restaurar valores de validación si existen
-        restoreBalanceValidation();
+        await handleParsedMovimientos(parsed.movimientos, resultTextarea, resultSection, status, 'IA de visión');
 
     } catch (error) {
-        console.error('Error procesando cartola:', error);
-        status.textContent = `❌ Error: ${error.message}`;
-        status.className = 'process-status error';
+        console.error('Error con visión directa:', error);
+        status.textContent = `⚠️ ${error.message}. Intentando con OCR local...`;
+        status.className = 'process-status info';
+
+        // Fallback: Tesseract.js + DeepSeek texto
+        try {
+            await tryOCRFallback(resultTextarea, resultSection, status);
+        } catch (ocrError) {
+            console.error('Error en fallback OCR:', ocrError);
+            status.textContent = `❌ Error: ${error.message}. Fallback OCR también falló: ${ocrError.message}`;
+            status.className = 'process-status error';
+        }
     } finally {
         processBtn.disabled = false;
         processBtn.innerHTML = '<span>🔍</span> Analizar cartola';
     }
+}
+
+function extractJsonFromContent(content) {
+    // 1. Buscar bloque markdown
+    const mdMatch = content.match(/```(?:json)?\s*([\s\S]*?)\s*```/);
+    if (mdMatch) return mdMatch[1];
+
+    // 2. Buscar JSON con balance de llaves
+    let braceCount = 0;
+    let start = -1;
+    for (let i = 0; i < content.length; i++) {
+        if (content[i] === '{') {
+            if (braceCount === 0) start = i;
+            braceCount++;
+        } else if (content[i] === '}') {
+            braceCount--;
+            if (braceCount === 0 && start !== -1) {
+                return content.substring(start, i + 1);
+            }
+        }
+    }
+    return content;
+}
+
+async function handleParsedMovimientos(movimientos, resultTextarea, resultSection, status, source) {
+    // Corregir tipos basándose en saldos
+    const corrected = correctMovementsByBalance(movimientos);
+
+    // Formatear resultado para Kame ERP
+    const lines = corrected.map(mov => {
+        const fecha = mov.fecha || '';
+        const comentario = (mov.comentario || '').replace(/;/g, ',');
+        const tipo = mov.tipo || 'CARGO';
+        const numero = mov.numero_mov || '2';
+        const montoEntero = typeof mov.monto === 'number' ? Math.round(mov.monto) : (parseInt(mov.monto) || 0);
+        return `${fecha};${comentario};${tipo};${numero};${montoEntero}`;
+    });
+
+    const output = lines.join('\n');
+
+    resultTextarea.value = output;
+    resultSection.classList.remove('hidden');
+    status.textContent = `✅ ${corrected.length} movimientos extraídos correctamente vía ${source}.`;
+    status.className = 'process-status success';
+
+    restoreBalanceValidation();
+}
+
+async function tryOCRFallback(resultTextarea, resultSection, status) {
+    if (!window.Tesseract) {
+        throw new Error('Librería Tesseract no disponible.');
+    }
+
+    status.textContent = '🔍 Ejecutando OCR local con Tesseract...';
+
+    const imageToOCR = (useProcessedImage && cartolaProcessedData) ? cartolaProcessedData : cartolaImageData;
+
+    const result = await window.Tesseract.recognize(
+        imageToOCR,
+        'spa',
+        {
+            logger: m => {
+                if (m.status === 'recognizing text') {
+                    status.textContent = `OCR local: ${Math.round(m.progress * 100)}%`;
+                }
+            }
+        }
+    );
+
+    const ocrText = result.data.text;
+    if (!ocrText || ocrText.trim().length < 20) {
+        throw new Error('El OCR no extrajo texto suficiente de la imagen.');
+    }
+
+    status.textContent = 'Enviando texto OCR a DeepSeek...';
+
+    const response = await fetch('/api/analyze-cartola-text', {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({ text: ocrText })
+    });
+
+    if (!response.ok) {
+        const errData = await response.json().catch(() => ({}));
+        throw new Error(errData.error || `Error HTTP ${response.status}`);
+    }
+
+    const data = await response.json();
+    const content = data.choices?.[0]?.message?.content || '';
+    const jsonStr = extractJsonFromContent(content);
+
+    let parsed;
+    try {
+        parsed = JSON.parse(jsonStr);
+    } catch (e) {
+        throw new Error('La respuesta del análisis de texto no es un JSON válido.');
+    }
+
+    if (!parsed.movimientos || !Array.isArray(parsed.movimientos)) {
+        throw new Error('No se encontraron movimientos en el texto OCR.');
+    }
+
+    await handleParsedMovimientos(parsed.movimientos, resultTextarea, resultSection, status, 'OCR + DeepSeek');
 }
 
 // ============================================================
