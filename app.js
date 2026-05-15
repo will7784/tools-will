@@ -1184,11 +1184,55 @@ function extractJsonFromContent(content) {
 }
 
 async function handleParsedMovimientos(movimientos, resultTextarea, resultSection, status, source) {
-    // Corrección en 2 pasadas:
-    // 1. Reglas de texto duras (TRASPASO A/DE, CARGO, PAGO, etc.)
-    // 2. Validación cruzada por saldos
-    let corrected = correctMovementsByTextRules(movimientos);
-    corrected = correctMovementsByBalance(corrected);
+    // Convertir formato crudo (monto_cargo / monto_abono) a formato Kame ERP
+    const converted = [];
+    for (const mov of movimientos) {
+        const comentarioRaw = (mov.comentario || '').toUpperCase();
+        const comentario = (mov.comentario || '').replace(/;/g, ',');
+        const fecha = mov.fecha || '';
+        const saldo = typeof mov.saldo_despues === 'number' ? mov.saldo_despues : (parseInt(mov.saldo_despues) || 0);
+
+        const montoCargo = typeof mov.monto_cargo === 'number' ? mov.monto_cargo : (parseInt(mov.monto_cargo) || 0);
+        const montoAbono = typeof mov.monto_abono === 'number' ? mov.monto_abono : (parseInt(mov.monto_abono) || 0);
+
+        let tipo, numero, monto;
+
+        if (montoCargo > 0 && montoAbono === 0) {
+            // El monto está en la columna de Cargos
+            monto = montoCargo;
+            if (comentarioRaw.includes('CHEQUE') || comentarioRaw.includes('CHQ')) {
+                tipo = 'CHEQUE';
+                numero = mov.numero_mov || '0';
+            } else {
+                tipo = 'CARGO';
+                numero = '2';
+            }
+        } else if (montoAbono > 0 && montoCargo === 0) {
+            // El monto está en la columna de Abonos
+            monto = montoAbono;
+            if (comentarioRaw.includes('DEPOSITO') || comentarioRaw.includes('DEPÓSITO')) {
+                tipo = 'DEPOSITO';
+                numero = mov.numero_mov || '1';
+            } else {
+                tipo = 'ABONO';
+                numero = '1';
+            }
+        } else if (montoCargo > 0 && montoAbono > 0) {
+            // Error del LLM: ambos tienen valor. Usar el que coincida con diferencia de saldo o el mayor
+            monto = Math.max(montoCargo, montoAbono);
+            tipo = 'CARGO';
+            numero = '2';
+            console.warn(`[Advertencia] Fila con ambos montos: ${comentario}, usando mayor: ${monto}`);
+        } else {
+            // Sin monto, saltar
+            continue;
+        }
+
+        converted.push({ fecha, comentario, tipo, numero_mov: numero, monto, saldo_despues: saldo });
+    }
+
+    // Validación cruzada por saldos
+    const corrected = correctMovementsByBalance(converted);
 
     // Formatear resultado para Kame ERP
     const lines = corrected.map(mov => {
@@ -1345,50 +1389,12 @@ function correctMovementsByBalance(movimientos) {
             ? (typeof corrected[i - 1].saldo_despues === 'number' ? Math.round(corrected[i - 1].saldo_despues) : null)
             : null;
 
-        const tipo = (mov.tipo || '').toUpperCase();
-        const isExit = ['CARGO', 'CHEQUE'].includes(tipo);
-        const isEntry = ['ABONO', 'DEPOSITO'].includes(tipo);
-
-        // --- Corrección por saldo (más agresiva) ---
+        // Solo corregimos montos, NO tipos. El tipo ya viene determinado por la columna (100% confiable).
         if (saldoAnterior !== null && saldoActual !== null) {
-            const diff = saldoActual - saldoAnterior;
-            const diffAbs = Math.abs(diff);
-
-            // Si el saldo subió > 100, DEBE ser entrada
-            if (diff > 100) {
-                if (isExit) {
-                    console.warn(`[Corrección saldo] Fila ${i + 1}: "${mov.comentario}" saldo subió ${diff} pero era ${tipo} → ABONO`);
-                    mov.tipo = 'ABONO';
-                    mov.numero_mov = '1';
-                }
-                // Si el monto está muy lejos del diff, corregirlo
-                if (diffAbs > 100 && (diffAbs < monto * 0.5 || diffAbs > monto * 1.5)) {
-                    console.warn(`[Corrección saldo] Fila ${i + 1}: monto ${monto} → ${diffAbs} (por saldo)`);
-                    mov.monto = diffAbs;
-                }
-            }
-            // Si el saldo bajó > 100, DEBE ser salida
-            else if (diff < -100) {
-                if (isEntry) {
-                    console.warn(`[Corrección saldo] Fila ${i + 1}: "${mov.comentario}" saldo bajó ${diffAbs} pero era ${tipo} → CARGO`);
-                    mov.tipo = 'CARGO';
-                    mov.numero_mov = '2';
-                }
-                if (diffAbs > 100 && (diffAbs < monto * 0.5 || diffAbs > monto * 1.5)) {
-                    console.warn(`[Corrección saldo] Fila ${i + 1}: monto ${monto} → ${diffAbs} (por saldo)`);
-                    mov.monto = diffAbs;
-                }
-            }
-        }
-
-        // --- Corrección de monto por saldo para primera fila (si no hay saldo anterior) ---
-        if (i === 0 && saldoActual !== null && saldoAnterior === null && mov.saldo_inicial) {
-            const saldoInicial = typeof mov.saldo_inicial === 'number' ? Math.round(mov.saldo_inicial) : null;
-            if (saldoInicial !== null) {
-                const diff = Math.abs(saldoActual - saldoInicial);
-                if (diff > 100 && (diff < monto * 0.5 || diff > monto * 1.5)) {
-                    mov.monto = diff;
-                }
+            const diff = Math.abs(saldoActual - saldoAnterior);
+            if (diff > 100 && (diff < monto * 0.5 || diff > monto * 1.5)) {
+                console.warn(`[Corrección saldo] Fila ${i + 1}: monto ${monto} → ${diff} (por diferencia de saldos)`);
+                mov.monto = diff;
             }
         }
     }
