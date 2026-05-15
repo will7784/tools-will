@@ -97,7 +97,7 @@
                         <ol>
                             <li>Copia una imagen de tu cartola bancaria (Ctrl+C o captura de pantalla)</li>
                             <li>Pégala con Ctrl+V en el área de abajo</li>
-                            <li>La IA (Claude 3.5 Sonnet) analizará la imagen directamente con visión y extraerá los movimientos</li>
+                            <li>La IA analizará la imagen directamente con visión (OpenAI GPT-4o o Google Gemini) y extraerá los movimientos. Si falla, se intenta automáticamente con OCR local + DeepSeek.</li>
                             <li>Revisa el resultado y cópialo para importar a Kame ERP</li>
                         </ol>
                         <div class="tip">
@@ -115,6 +115,15 @@
                             </div>
                             <img id="cartola-preview" class="cartola-preview hidden" alt="Vista previa de cartola">
                             <button id="clear-cartola-btn" class="btn-secondary hidden">Limpiar imagen</button>
+                        </div>
+
+                        <!-- Opciones de preprocesamiento -->
+                        <div class="preprocess-options" id="preprocess-options">
+                            <label class="toggle-label" title="Aplica escalado 2x, sharpening y threshold adaptativo para mejorar la lectura del texto">
+                                <input type="checkbox" id="use-processed-image" checked>
+                                <span class="toggle-text">🎚️ Usar imagen optimizada para OCR (recomendado)</span>
+                            </label>
+                            <button id="view-processed-btn" class="btn-small hidden" title="Ver cómo quedó la imagen después del preprocesamiento">👁️ Ver imagen procesada</button>
                         </div>
 
                         <!-- Botón procesar -->
@@ -160,6 +169,20 @@
                 </div>
             </div>
         </main>
+    </div>
+
+    <!-- Modal para ver imagen procesada -->
+    <div id="processed-image-modal" class="modal hidden">
+        <div class="modal-content modal-large">
+            <h3>Vista previa de imagen optimizada</h3>
+            <p class="modal-subtitle">Esta es la imagen que se envía a la IA después del preprocesamiento (escalado, sharpening y contraste).</p>
+            <div class="processed-image-wrapper">
+                <img id="processed-image-preview" src="" alt="Imagen procesada">
+            </div>
+            <div class="modal-actions">
+                <button id="close-processed-modal" class="btn-secondary">Cerrar</button>
+            </div>
+        </div>
     </div>
 
     <!-- Modal para Exportar PDF -->
