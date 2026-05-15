@@ -899,3 +899,71 @@ body {
         flex: 1;
     }
 }
+
+
+/* ============================================================
+   OPCIONES DE PREPROCESAMIENTO Y MODAL DE IMAGEN PROCESADA
+   ============================================================ */
+
+.preprocess-options {
+    background: var(--card-bg);
+    padding: 1rem 1.5rem;
+    border-radius: var(--border-radius);
+    box-shadow: var(--shadow);
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 1rem;
+    flex-wrap: wrap;
+}
+
+.toggle-label {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    cursor: pointer;
+    font-size: 0.95rem;
+    user-select: none;
+}
+
+.toggle-label input[type="checkbox"] {
+    width: 1.2rem;
+    height: 1.2rem;
+    accent-color: var(--primary-color);
+    cursor: pointer;
+}
+
+.toggle-text {
+    color: var(--text-color);
+}
+
+.modal-large {
+    max-width: 900px !important;
+    width: 95% !important;
+    max-height: 90vh;
+    display: flex;
+    flex-direction: column;
+}
+
+.modal-subtitle {
+    font-size: 0.9rem;
+    color: #666;
+    margin-bottom: 1rem;
+    margin-top: -1rem;
+}
+
+.processed-image-wrapper {
+    overflow: auto;
+    max-height: 60vh;
+    background: #f0f0f0;
+    border-radius: var(--border-radius);
+    padding: 1rem;
+    text-align: center;
+}
+
+.processed-image-wrapper img {
+    max-width: 100%;
+    height: auto;
+    border-radius: 4px;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+}
