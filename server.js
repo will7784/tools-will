@@ -3,16 +3,16 @@ const path = require('path');
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-// Cargar pdf-to-img de forma lazy para evitar crash en arranque
+// Cargar pdf-to-img de forma lazy (ESM) para evitar crash en arranque
 let pdfToImg = null;
 async function getPdfToImg() {
     if (!pdfToImg) {
-        pdfToImg = require('pdf-to-img');
+        pdfToImg = await import('pdf-to-img');
     }
     return pdfToImg;
 }
 
-app.use(express.json({ limit: '10mb' }));
+app.use(express.json({ limit: '50mb' }));
 
 // Servir archivos estáticos del frontend
 app.use(express.static(path.join(__dirname)));
@@ -143,104 +143,190 @@ app.post('/api/analyze-cartola-text', async (req, res) => {
     }
 });
 
-// Endpoint con visión directa usando Claude 3.5 Sonnet (Anthropic)
-app.post('/api/analyze-cartola-vision', async (req, res) => {
-    const apiKey = process.env.ANTHROPIC_API_KEY;
-    if (!apiKey) {
-        return res.status(500).json({ error: 'ANTHROPIC_API_KEY no está configurada en las variables de entorno' });
+// Helper: convertir PDF base64 a imagen PNG usando pdf-to-img
+async function pdfBase64ToPngBase64(base64Pdf) {
+    const pdfLib = await getPdfToImg();
+    const dataUrl = `data:application/pdf;base64,${base64Pdf}`;
+    const doc = await pdfLib.pdf(dataUrl, { scale: 3 });
+    let firstPageBuffer = null;
+    for await (const image of doc) {
+        firstPageBuffer = image;
+        break; // Solo primera página
+    }
+    if (!firstPageBuffer) {
+        throw new Error('No se pudo convertir el PDF a imagen');
+    }
+    return firstPageBuffer.toString('base64');
+}
+
+const VISION_PROMPT = `Eres un experto contable chileno especializado en leer cartolas bancarias del Banco de Chile. Extrae TODOS los movimientos con 100% de precisión.
+
+INSTRUCCIONES DE ANÁLISIS PASO A PASO:
+1. Identifica la estructura de la tabla en la imagen.
+2. Localiza las columnas: Fecha, Descripción/Detalle, Canal/Sucursal, N° Documento, Cargos (CLP), Abonos (CLP), Saldo (CLP).
+3. Lee fila por fila de arriba hacia abajo.
+4. Si una descripción está partida en varias líneas, únela en un solo comentario.
+5. Cada movimiento tiene EXACTAMENTE un monto: o en Cargos, o en Abonos. NUNCA ambos.
+
+REGLAS CRÍTICAS PARA CLASIFICAR:
+- Cargos (columna 5) = SALIDA de dinero del banco → tipo "CARGO", numero_mov "2"
+- Abonos (columna 6) = ENTRADA de dinero al banco → tipo "ABONO", numero_mov "1"
+- Si la descripción contiene "CHEQUE" o "CHQ" Y el monto está en Cargos → tipo "CHEQUE", numero_mov = número del documento (columna 4). Si no hay número, usa "0".
+- Si la descripción contiene "DEPOSITO" o "DEPÓSITO" Y el monto está en Abonos → tipo "DEPOSITO", numero_mov = número del documento si existe, si no "1".
+- "Traspaso a..." / "Transferencia a..." → generalmente CARGO (salida)
+- "Traspaso desde..." / "Transferencia desde..." / "TRASPASO DESDE" → generalmente ABONO (entrada)
+- "PAGO" solo no garantiza cargo: "PAGO RECIBIDO" puede ser ABONO.
+
+VALIDACIÓN POR SALDOS:
+- El saldo debe bajar después de un CARGO/CHEQUE.
+- El saldo debe subir después de un ABONO/DEPOSITO.
+- Si detectas inconsistencia, corrige el tipo basándote en la variación del saldo.
+
+FORMATO DE FECHAS:
+- La fecha puede venir como "15 Ene", "15/01/2024", "15-01-2024", etc.
+- Convierte SIEMPRE a formato dd/mm/aaaa.
+- Si el año no está explícito, infiere el año actual.
+
+FORMATO DE MONTOS:
+- Quita puntos de miles y comas decimales.
+- Devuelve números enteros puros (ej: 85000000 en vez de 85.000.000).
+- El campo saldo_despues es el saldo que aparece en la columna "Saldo (CLP)" DESPUÉS de ese movimiento.
+
+EJEMPLOS CORRECTOS:
+- Fila: 02/01/2024 | Traspaso a 96571220-8 FMU | - | - | 85.000.000 | - | 45.234.123
+  → {"fecha":"02/01/2024","comentario":"Traspaso a 96571220-8 FMU","tipo":"CARGO","numero_mov":"2","monto":85000000,"saldo_despues":45234123}
+- Fila: 03/01/2024 | TRASPASO DESDE OTRA CUENTA | - | - | - | 33.000.000 | 78.234.123
+  → {"fecha":"03/01/2024","comentario":"TRASPASO DESDE OTRA CUENTA","tipo":"ABONO","numero_mov":"1","monto":33000000,"saldo_despues":78234123}
+- Fila: 05/01/2024 | Cheque 12345 | Sucursal 123 | 12345 | 150.000 | - | 78.084.123
+  → {"fecha":"05/01/2024","comentario":"Cheque 12345","tipo":"CHEQUE","numero_mov":"12345","monto":150000,"saldo_despues":78084123}
+
+DEVUELVE EXCLUSIVAMENTE este JSON válido sin texto adicional ni markdown:
+{"movimientos":[{"fecha":"dd/mm/aaaa","comentario":"...","tipo":"CARGO|ABONO|CHEQUE|DEPOSITO","numero_mov":"número","monto":12345,"saldo_despues":123456}]}
+
+No incluyas filas vacías, totales, ni saldos iniciales/finales. Solo movimientos individuales.`;
+
+function normalizeOpenAIResponse(data) {
+    // OpenAI ya devuelve formato choices[0].message.content
+    return data;
+}
+
+function normalizeGoogleResponse(data) {
+    // Google devuelve candidates[0].content.parts[0].text
+    const textContent = data.candidates?.[0]?.content?.parts?.[0]?.text || '';
+    return {
+        choices: [{
+            message: {
+                content: textContent
+            }
+        }]
+    };
+}
+
+async function callOpenAIVision(apiKey, imageBase64, mimeType, prompt) {
+    const imageUrl = `data:${mimeType};base64,${imageBase64}`;
+    const response = await fetch('https://api.openai.com/v1/chat/completions', {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${apiKey}`
+        },
+        body: JSON.stringify({
+            model: 'gpt-4o',
+            max_tokens: 4000,
+            temperature: 0.1,
+            messages: [{
+                role: 'user',
+                content: [
+                    { type: 'image_url', image_url: { url: imageUrl, detail: 'high' } },
+                    { type: 'text', text: prompt }
+                ]
+            }]
+        })
+    });
+
+    if (!response.ok) {
+        const errData = await response.json().catch(() => ({}));
+        throw new Error(errData.error?.message || `Error HTTP ${response.status}`);
     }
 
+    const data = await response.json();
+    return normalizeOpenAIResponse(data);
+}
+
+async function callGoogleVision(apiKey, imageBase64, mimeType, prompt) {
+    const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${apiKey}`, {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+            contents: [{
+                parts: [
+                    { inlineData: { mimeType, data: imageBase64 } },
+                    { text: prompt }
+                ]
+            }],
+            generationConfig: {
+                temperature: 0.1,
+                maxOutputTokens: 4000
+            }
+        })
+    });
+
+    if (!response.ok) {
+        const errData = await response.json().catch(() => ({}));
+        throw new Error(errData.error?.message || `Error HTTP ${response.status}`);
+    }
+
+    const data = await response.json();
+    return normalizeGoogleResponse(data);
+}
+
+// Endpoint con visión directa - usa OpenAI o Google según disponibilidad
+app.post('/api/analyze-cartola-vision', async (req, res) => {
     const { imageBase64, mimeType } = req.body;
     if (!imageBase64) {
         return res.status(400).json({ error: 'No se recibió archivo' });
     }
 
-    const finalMimeType = mimeType || 'image/png';
+    let finalMimeType = mimeType || 'image/png';
+    let imageData = imageBase64;
 
     try {
-        const prompt = `Eres un experto contable chileno especializado en leer cartolas bancarias del Banco de Chile. Extrae TODOS los movimientos con 100% de precisión.
-
-La tabla tiene estas columnas EXACTAS:
-1. Fecha | 2. Descripción | 3. Canal/Sucursal | 4. N° Documento | 5. Cargos (CLP) - SALIDAS | 6. Abonos (CLP) - ENTRADAS | 7. Saldo (CLP)
-
-REGLAS CRÍTICAS:
-- Cada fila tiene UN solo monto: o en Cargos, o en Abonos. NUNCA ambos.
-- Cargos (columna 5) = SALIDA de dinero → tipo "CARGO", numero_mov "2"
-- Abonos (columna 6) = ENTRADA de dinero → tipo "ABONO", numero_mov "1"
-- Si en Cargos dice CHEQUE → tipo "CHEQUE", numero_mov = número del doc
-- Los saldos deben ser consistentes: bajan con CARGOS, suben con ABONOS
-
-EJEMPLOS CORRECTOS:
-- "Traspaso a 96571220-8 FMU" con 85.000.000 en Cargos → CARGO,2,85000000
-- "TRASPASO DESDE OTRA CUENTA" con 33.000.000 en Abonos → ABONO,1,33000000
-- "CARGO SEGURO PROTECCION" con 8.151 en Cargos → CARGO,2,8151
-
-FORMATO: Devuelve SOLO un JSON válido sin texto extra:
-{"movimientos":[{"fecha":"dd/mm/aaaa","comentario":"...","tipo":"CARGO|ABONO|CHEQUE|DEPOSITO","numero_mov":"número","monto":12345,"saldo_despues":123456}]}
-
-Monto y saldo_despues son enteros sin puntos ni comas. No incluyas filas vacías ni totales.`;
-
-        let content = [];
-
+        // Si es PDF, intentar convertir a imagen para mejor precisión en tablas
         if (finalMimeType === 'application/pdf') {
-            content.push({
-                type: 'document',
-                source: {
-                    type: 'base64',
-                    media_type: 'application/pdf',
-                    data: imageBase64
-                }
-            });
+            try {
+                imageData = await pdfBase64ToPngBase64(imageBase64);
+                finalMimeType = 'image/png';
+                console.log('PDF convertido a imagen para análisis de visión');
+            } catch (pdfErr) {
+                console.warn('No se pudo convertir PDF a imagen:', pdfErr.message);
+                return res.status(400).json({ error: 'No se pudo convertir el PDF a imagen. Asegúrate de haber ejecutado npm install.' });
+            }
+        }
+
+        const openAiKey = process.env.OPENAI_API_KEY;
+        const googleKey = process.env.GOOGLE_API_KEY;
+
+        let result;
+        let provider;
+
+        if (openAiKey) {
+            provider = 'OpenAI GPT-4o';
+            result = await callOpenAIVision(openAiKey, imageData, finalMimeType, VISION_PROMPT);
+        } else if (googleKey) {
+            provider = 'Google Gemini 1.5 Flash';
+            result = await callGoogleVision(googleKey, imageData, finalMimeType, VISION_PROMPT);
         } else {
-            content.push({
-                type: 'image',
-                source: {
-                    type: 'base64',
-                    media_type: finalMimeType,
-                    data: imageBase64
-                }
+            return res.status(500).json({
+                error: 'No hay API key de visión configurada. Configura OPENAI_API_KEY o GOOGLE_API_KEY en las variables de entorno.'
             });
         }
 
-        content.push({ type: 'text', text: prompt });
-
-        const response = await fetch('https://api.anthropic.com/v1/messages', {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-                'x-api-key': apiKey,
-                'anthropic-version': '2023-06-01'
-            },
-            body: JSON.stringify({
-                model: 'claude-3-5-sonnet-20241022',
-                max_tokens: 4000,
-                temperature: 0.1,
-                messages: [{ role: 'user', content }]
-            })
-        });
-
-        if (!response.ok) {
-            const errData = await response.json().catch(() => ({}));
-            return res.status(response.status).json({
-                error: errData.error?.message || `Error HTTP ${response.status}`
-            });
-        }
-
-        const data = await response.json();
-        const textContent = data.content?.find(c => c.type === 'text')?.text || '';
-
-        // Normalizar a formato compatible con frontend
-        const normalized = {
-            choices: [{
-                message: {
-                    content: textContent
-                }
-            }]
-        };
-
-        res.json(normalized);
+        console.log(`Cartola analizada con éxito vía ${provider}`);
+        res.json(result);
     } catch (error) {
-        console.error('Error Anthropic:', error);
+        console.error('Error visión:', error);
         res.status(500).json({ error: error.message });
     }
 });
