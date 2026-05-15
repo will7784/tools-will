@@ -18,65 +18,34 @@ app.use(express.json({ limit: '50mb' }));
 app.use(express.static(path.join(__dirname)));
 
 function buildPrompt(ocrText) {
-    return `A continuación te paso el texto extraído por OCR de una cartola bancaria. Tu tarea es analizarlo y extraer TODOS los movimientos individuales.
+    return `Eres un extractor de datos tabulares. NO razones sobre dirección del dinero. Solo extrae los números del texto OCR.
 
-TEXTO OCR EXTRAÍDO:
+TEXTO OCR:
 ---
 ${ocrText}
 ---
 
-Devuélveme EXCLUSIVAMENTE un JSON con esta estructura exacta (sin markdown, sin explicaciones, solo el JSON puro):
+La cartola tiene estas columnas:
+1. FECHA
+2. DESCRIPCIÓN
+3. SUCURSAL
+4. N° DOCTO
+5. CARGOS (montos de salida)
+6. ABONOS (montos de entrada)
+7. SALDO
 
-{
-  "movimientos": [
-    {
-      "fecha": "dd/mm/aaaa",
-      "comentario": "descripción del movimiento",
-      "tipo": "CARGO|CHEQUE|ABONO|DEPOSITO",
-      "numero_mov": "número",
-      "monto": 12345,
-      "saldo_despues": 123456
-    }
-  ]
-}
+REGLAS:
+- Extrae cada fila como un objeto con: fecha, comentario, monto_cargo, monto_abono, saldo_despues.
+- monto_cargo = número entero de la columna 5 (o 0 si está vacía)
+- monto_abono = número entero de la columna 6 (o 0 si está vacía)
+- saldo_despues = número entero de la columna 7
+- Quitar puntos de miles. Ej: 1.274.944 → 1274944
+- NO uses la descripción para decidir cargo/abono. Solo usa la columna numérica.
 
-REGLAS CRÍTICAS PARA DETERMINAR tipo, numero_mov Y saldo_despues:
+FORMATO:
+{"movimientos":[{"fecha":"dd/mm/aaaa","comentario":"...","monto_cargo":0,"monto_abono":1274944,"saldo_despues":123456}]}
 
-1. IDENTIFICAR CARGO vs ABONO:
-   La cartola tiene DOS COLUMNAS separadas: "Cargos (CLP)" y "Abonos (CLP)".
-   - Si el monto aparece en la columna de CARGOS (salida de dinero) → tipo = "CARGO" o "CHEQUE"
-   - Si el monto aparece en la columna de ABONOS (entrada de dinero) → tipo = "ABONO" o "DEPOSITO"
-   - NO asumas que "PAGO" siempre es cargo. Un "PAGO RECIBIDO" o "TRASPASO DESDE..." puede ser ABONO.
-   - "TRASPASO A..." generalmente es CARGO (salida).
-   - "TRASPASO DESDE..." o "TRASPASO DE..." generalmente es ABONO (entrada).
-   - Revisa el saldo después de cada fila: si el saldo SUBIÓ respecto a la fila anterior, ese movimiento es ABONO/DEPOSITO. Si el saldo BAJÓ, es CARGO/CHEQUE.
-
-2. ABONOS (entradas de dinero):
-   - Siempre tipo = "ABONO" y numero_mov = "1"
-
-3. CARGOS (salidas de dinero):
-   - En el 99% de los casos: tipo = "CARGO" y numero_mov = "2"
-   - PERO si detectas explícitamente la palabra "CHEQUE" o "CHQ" o similar en la descripción o en la columna de cargo, entonces:
-     * tipo = "CHEQUE"
-     * numero_mov = el número de documento/cheque que aparece (ej: "12345")
-     * Si no hay número visible, usa "0"
-   - Si es una transferencia u otro cargo normal: tipo = "CARGO", numero_mov = "2"
-
-4. DEPÓSITOS:
-   - tipo = "DEPOSITO"
-   - numero_mov = número de documento si está visible, si no "1"
-
-5. Fecha: devuélvela siempre en formato dd/mm/aaaa. Si el año no está visible, infiere el año actual.
-
-6. Monto: número entero sin decimales. Sin símbolos de moneda ni puntos de miles. Si el OCR trajo comas o puntos mezclados, corrígelo al número entero puro.
-
-7. saldo_despues: saldo que aparece en la columna "Saldo (CLP)" DESPUÉS de este movimiento. Número entero sin decimales. Esto es CRÍTICO para validar la dirección del movimiento.
-
-8. Comentario: descripción completa del movimiento.
-
-9. No incluyas totales, saldos ni resúmenes. Solo movimientos individuales.
-
-10. Si el texto OCR está desordenado o tiene errores, infiere lo mejor posible basándote en el contexto y en la variación de saldos.`;
+Solo devuelve el JSON puro. Sin markdown, sin explicaciones.`;
 }
 
 // Proxy para analizar cartola con DeepSeek (modo imagen - legacy)
@@ -159,70 +128,51 @@ async function pdfBase64ToPngBase64(base64Pdf) {
     return firstPageBuffer.toString('base64');
 }
 
-const VISION_PROMPT = `Eres un experto contable chileno especializado en leer cartolas bancarias del Banco de Chile. Tu tarea es extraer TODOS los movimientos con 100% de precisión.
+const VISION_PROMPT = `Eres un sistema de extracción de datos tabulares. NO razones sobre la dirección del dinero. SOLO lee la tabla y extrae los números que ves en cada celda.
 
-ESTRUCTURA EXACTA DE LA TABLA (lee esto primero):
-La imagen muestra una tabla con estas columnas de izquierda a derecha:
-1. FECHA (dd/mm)
-2. DETALLE DE TRANSACCION (descripción del movimiento)
-3. SUCURSAL (Central, Internet, etc.)
-4. N° DOCTO (número de documento)
-5. MONTO CHEQUES O CARGOS (SALIDAS de dinero)
-6. MONTO DEPOSITOS O ABONOS (ENTRADAS de dinero)
-7. SALDO (saldo después del movimiento)
+ESTRUCTURA DE LA TABLA (de izquierda a derecha):
+1. FECHA
+2. DETALLE / DESCRIPCIÓN
+3. SUCURSAL
+4. N° DOCTO
+5. MONTO CHEQUES O CARGOS (columna de SALIDAS)
+6. MONTO DEPOSITOS O ABONOS (columna de ENTRADAS)
+7. SALDO
 
-INSTRUCCIONES DE ANÁLISIS PASO A PASO:
-1. PRIMERO describe mentalmente la estructura de la tabla que ves.
-2. Lee fila por fila de ARRIBA hacia ABAJO, sin saltarte ninguna.
-3. Para CADA fila, identifica en qué COLUMNA está el monto: columna 5 (CARGOS) o columna 6 (ABONOS). NUNCA ambas.
-4. Si una descripción ocupa varias líneas, únela en una sola.
-5. Extrae el SALDO de la columna 7 DESPUÉS de cada movimiento.
+INSTRUCCIONES CRÍTICAS:
+1. PRIMERO identifica visualmente cuál es la columna 5 (Cargos) y cuál es la columna 6 (Abonos).
+2. Lee fila por fila de ARRIBA hacia ABAJO.
+3. Para CADA fila, extrae el número que aparece en la columna 5 (si hay) y el número que aparece en la columna 6 (si hay).
+4. NORMALMENTE una fila tiene número en UNA sola columna (5 o 6), no en ambas.
+5. Extrae también el SALDO de la columna 7 al final de la fila.
+6. Si una descripción está partida en varias líneas, únela.
 
-REGLAS ABSOLUTAS DE CLASIFICACIÓN (obedece estas reglas sin excepción):
-- Si el monto está en la columna 5 (CARGOS/CHEQUES) → tipo = "CARGO", numero_mov = "2"
-- Si el monto está en la columna 6 (DEPOSITOS/ABONOS) → tipo = "ABONO", numero_mov = "1"
-- "APP-TRASPASO A:NOMBRE" o "TRASPASO A:" → siempre CARGO (salida), numero_mov = "2"
-- "TRASPASO DE:NOMBRE" o "TRASPASO DE:" → siempre ABONO (entrada), numero_mov = "1"
-- "CARGO SEGURO PROTECCION BANCARIA" → siempre CARGO, numero_mov = "2"
-- "PAGO EN SII" o "PAGO AUTOMATICO TARJETA DE CREDITO" → siempre CARGO, numero_mov = "2"
-- "PAGO:PROVEEDORES" → siempre ABONO (es un depósito de proveedores), numero_mov = "1"
-- Si la descripción contiene "CHEQUE" y el monto está en Cargos → tipo = "CHEQUE", numero_mov = número del doc o "0"
+REGLA DE ORO: NO uses la descripción para decidir si es cargo o abono. Usa ÚNICAMENTE la columna donde está el número:
+- Número en columna 5 → va en "monto_cargo"
+- Número en columna 6 → va en "monto_abono"
 
-VALIDACIÓN CRUZADA OBLIGATORIA (haz esto para CADA fila):
-Después de extraer una fila, verifica:
-- ¿El saldo subió respecto a la fila anterior? → DEBE ser ABONO/DEPOSITO
-- ¿El saldo bajó respecto a la fila anterior? → DEBE ser CARGO/CHEQUE
-- ¿El monto extraído coincide con |saldo_actual - saldo_anterior|?
-  * Si NO coincide, usa la diferencia de saldos como el monto CORRECTO.
-  * Esto es CRÍTICO porque a veces los números se confunden entre filas adyacentes.
+Esto es FUNDAMENTAL: una fila puede decir "Cargo Seguro" en la descripción, pero si el número está en la columna 6, el monto va en "monto_abono", NO en "monto_cargo". La descripción es solo texto; la dirección del dinero la determina la COLUMNA numérica.
 
-FORMATO DE FECHAS:
-- Convierte SIEMPRE a dd/mm/aaaa.
-- Si el año no aparece, usa el año que aparece en el encabezado de la cartola.
+FORMATO DE SALIDA (JSON estricto):
+{"movimientos":[{"fecha":"dd/mm/aaaa","comentario":"...","monto_cargo":0,"monto_abono":1274944,"saldo_despues":123456}]}
 
-FORMATO DE MONTOS Y SALDOS:
-- Quita puntos de miles y comas decimales.
-- Devuelve SOLO números enteros puros (ej: 85000000 en vez de 85.000.000).
-- El campo "saldo_despues" es el saldo de la columna 7 DESPUÉS de ese movimiento.
-- El campo "monto" es el valor de la columna 5 o 6.
+- "monto_cargo": número entero de la columna 5, o 0 si está vacía
+- "monto_abono": número entero de la columna 6, o 0 si está vacía
+- "saldo_despues": saldo de la columna 7
+- Quita puntos de miles. Ej: 1.274.944 → 1274944
+- Si una fila tiene número en ambas columnas (raro), pon el número en ambos campos.
 
-EJEMPLOS DE ESTA CARTOLA ESPECÍFICA:
-- "CARGO SEGURO PROTECCION BANCARIA" con 8.160 en Cargos y saldo 1.813.658
-  → {"fecha":"02/04/2026","comentario":"Cargo Seguro Proteccion Bancaria","tipo":"CARGO","numero_mov":"2","monto":8160,"saldo_despues":1813658}
-- "TRASPASO DE:CLAUDIO ANDRES ASMAD T" con 1.274.944 en Abonos y saldo 3.080.442
-  → {"fecha":"02/04/2026","comentario":"Traspaso de:Claudio Andres Asmad T","tipo":"ABONO","numero_mov":"1","monto":1274944,"saldo_despues":3080442}
-- "APP-TRASPASO A:Dolores Gazitua" con 450.000 en Cargos y saldo 3.933.267
-  → {"fecha":"06/04/2026","comentario":"APP-Traspaso A:Dolores Gazitua","tipo":"CARGO","numero_mov":"2","monto":450000,"saldo_despues":3933267}
-- "PAGO:PROVEEDORES 09696520K" con 28.824.495 en Abonos
-  → {"fecha":"20/04/2026","comentario":"Pago:Proveedores 09696520K","tipo":"ABONO","numero_mov":"1","monto":28824495,"saldo_despues":26536749}
+EJEMPLO REAL DE ESTA CARTOLA:
+- Fila: 02/04 | CARGO SEGURO PROTECCION BANCARIA | CENTRAL | - | 8.160 | - | 1.813.658
+  → {"fecha":"02/04/2026","comentario":"Cargo Seguro Proteccion Bancaria","monto_cargo":8160,"monto_abono":0,"saldo_despues":1813658}
+- Fila: 02/04 | TRASPASO DE:CLAUDIO ANDRES ASMAD T | INTERNET | - | - | 1.274.944 | 3.080.442
+  → {"fecha":"02/04/2026","comentario":"Traspaso de:Claudio Andres Asmad T","monto_cargo":0,"monto_abono":1274944,"saldo_despues":3080442}
+- Fila: 06/04 | APP-TRASPASO A:Dolores Gazitua | INTERNET | - | 450.000 | - | 3.933.267
+  → {"fecha":"06/04/2026","comentario":"APP-Traspaso A:Dolores Gazitua","monto_cargo":450000,"monto_abono":0,"saldo_despues":3933267}
+- Fila: 20/04 | PAGO:PROVEEDORES 09696520K | CENTRAL | - | - | 28.824.495 | 26.536.749
+  → {"fecha":"20/04/2026","comentario":"Pago:Proveedores 09696520K","monto_cargo":0,"monto_abono":28824495,"saldo_despues":26536749}
 
-REGLA DE ORO:
-Si extraes un movimiento y el saldo no cuadra con el tipo o el monto, CORRÍGELO. Es mejor estar lento y correcto que rápido y equivocado.
-
-DEVUELVE EXCLUSIVAMENTE este JSON válido sin texto adicional ni markdown:
-{"movimientos":[{"fecha":"dd/mm/aaaa","comentario":"...","tipo":"CARGO|ABONO|CHEQUE|DEPOSITO","numero_mov":"número","monto":12345,"saldo_despues":123456}]}
-
-No incluyas filas vacías, totales, saldos iniciales/finales, ni filas que solo digan "SALDO INICIAL" o "SALDO FINAL". Solo movimientos individuales con fecha.`;
+SOLO devuelve el JSON. Sin explicaciones, sin markdown.`;
 
 function normalizeOpenAIResponse(data) {
     // OpenAI ya devuelve formato choices[0].message.content
