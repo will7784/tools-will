@@ -1074,6 +1074,68 @@ async function preprocessImageForOCR(dataUrl) {
     });
 }
 
+async function analyzeTextWithDeepSeek(text, resultTextarea, resultSection, status) {
+    status.textContent = 'Enviando texto a DeepSeek...';
+    const response = await fetch('/api/analyze-cartola-text', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ text })
+    });
+
+    if (!response.ok) {
+        const errData = await response.json().catch(() => ({}));
+        throw new Error(errData.error || `Error HTTP ${response.status}`);
+    }
+
+    const data = await response.json();
+    const content = data.choices?.[0]?.message?.content || '';
+    const jsonStr = extractJsonFromContent(content);
+
+    let parsed;
+    try {
+        parsed = JSON.parse(jsonStr);
+    } catch (e) {
+        throw new Error('La respuesta del análisis de texto no es un JSON válido.');
+    }
+
+    if (!parsed.movimientos || !Array.isArray(parsed.movimientos)) {
+        throw new Error('No se encontraron movimientos en el texto.');
+    }
+
+    await handleParsedMovimientos(parsed.movimientos, resultTextarea, resultSection, status, 'DeepSeek texto');
+}
+
+async function analyzeImageWithVision(imageBase64, mimeType, resultTextarea, resultSection, status) {
+    status.textContent = 'Enviando imagen a IA de visión...';
+    const response = await fetch('/api/analyze-cartola-vision', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ imageBase64, mimeType })
+    });
+
+    if (!response.ok) {
+        const errData = await response.json().catch(() => ({}));
+        throw new Error(errData.error || `Error HTTP ${response.status}`);
+    }
+
+    const data = await response.json();
+    const content = data.choices?.[0]?.message?.content || '';
+    const jsonStr = extractJsonFromContent(content);
+
+    let parsed;
+    try {
+        parsed = JSON.parse(jsonStr);
+    } catch (e) {
+        throw new Error('La respuesta no es un JSON válido.');
+    }
+
+    if (!parsed.movimientos || !Array.isArray(parsed.movimientos)) {
+        throw new Error('No se encontraron movimientos.');
+    }
+
+    await handleParsedMovimientos(parsed.movimientos, resultTextarea, resultSection, status, 'IA de visión');
+}
+
 async function processCartolaWithDeepSeek() {
     const status = document.getElementById('process-status');
     const processBtn = document.getElementById('process-cartola-btn');
@@ -1081,7 +1143,7 @@ async function processCartolaWithDeepSeek() {
     const resultTextarea = document.getElementById('cartola-result');
 
     if (!cartolaImageData) {
-        alert('Por favor pega una imagen de cartola primero.');
+        alert('Por favor pega una imagen o PDF de cartola primero.');
         return;
     }
 
@@ -1091,68 +1153,82 @@ async function processCartolaWithDeepSeek() {
     status.className = 'process-status info';
     resultSection.classList.add('hidden');
 
-    // MÉTODO 1: OCR + DeepSeek (más preciso para tablas del Banco de Chile)
     try {
-        status.textContent = '🔍 Paso 1/2: OCR local + DeepSeek...';
-        await tryOCRFallback(resultTextarea, resultSection, status);
-        // Si llegó aquí, OCR funcionó. Validamos que tengamos suficientes movimientos.
-        const lines = resultTextarea.value.trim().split('\n').filter(l => l.trim());
-        if (lines.length >= 3) {
-            status.textContent = `✅ ${lines.length} movimientos extraídos vía OCR + DeepSeek.`;
-            status.className = 'process-status success';
-            processBtn.disabled = false;
-            processBtn.innerHTML = '<span>🔍</span> Analizar cartola';
-            return; // Éxito, no necesitamos visión
-        }
-        console.warn('OCR devolvió muy pocos movimientos, intentando visión...');
-    } catch (ocrError) {
-        console.warn('OCR + DeepSeek falló:', ocrError);
-    }
+        // ============================================================
+        // CASO 1: PDF NATIVO (texto seleccionable)
+        // ============================================================
+        if (cartolaMimeType === 'application/pdf') {
+            status.textContent = '🔍 Extrayendo texto del PDF...';
+            const pdfBase64 = cartolaImageData.split(',')[1];
 
-    // MÉTODO 2: Visión directa (fallback si OCR no funciona bien)
-    try {
+            const extractResponse = await fetch('/api/extract-pdf-text', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ pdfBase64 })
+            });
+
+            if (!extractResponse.ok) {
+                const errData = await extractResponse.json().catch(() => ({}));
+                throw new Error(errData.error || 'Error extrayendo PDF');
+            }
+
+            const extractData = await extractResponse.json();
+
+            if (extractData.hasText && extractData.text) {
+                // PDF nativo con texto → DeepSeek directo
+                status.textContent = '✅ PDF nativo detectado. Analizando texto...';
+                await analyzeTextWithDeepSeek(extractData.text, resultTextarea, resultSection, status);
+                processBtn.disabled = false;
+                processBtn.innerHTML = '<span>🔍</span> Analizar cartola';
+                return;
+            }
+
+            // PDF escaneado: usamos la imagen generada por el backend
+            if (extractData.imageBase64) {
+                status.textContent = '🔍 PDF escaneado. Analizando imagen...';
+                await analyzeImageWithVision(extractData.imageBase64, 'image/png', resultTextarea, resultSection, status);
+                processBtn.disabled = false;
+                processBtn.innerHTML = '<span>🔍</span> Analizar cartola';
+                return;
+            }
+        }
+
+        // ============================================================
+        // CASO 2: IMAGEN (PNG/JPG)
+        // ============================================================
+        // Método A: OCR local + DeepSeek
+        try {
+            status.textContent = '🔍 Paso 1/2: OCR local + DeepSeek...';
+            await tryOCRFallback(resultTextarea, resultSection, status);
+            const lines = resultTextarea.value.trim().split('\n').filter(l => l.trim());
+            if (lines.length >= 3) {
+                status.textContent = `✅ ${lines.length} movimientos extraídos vía OCR + DeepSeek.`;
+                status.className = 'process-status success';
+                processBtn.disabled = false;
+                processBtn.innerHTML = '<span>🔍</span> Analizar cartola';
+                return;
+            }
+            console.warn('OCR devolvió muy pocos movimientos, intentando visión...');
+        } catch (ocrError) {
+            console.warn('OCR + DeepSeek falló:', ocrError);
+        }
+
+        // Método B: Visión directa (fallback)
         status.textContent = '🔍 Paso 2/2: Visión directa con IA...';
         let imageToSend = cartolaImageData;
         let mimeToSend = cartolaMimeType;
 
-        if (useProcessedImage && cartolaProcessedData && cartolaMimeType !== 'application/pdf') {
+        if (useProcessedImage && cartolaProcessedData) {
             imageToSend = cartolaProcessedData;
             mimeToSend = 'image/png';
         }
 
         const base64Image = imageToSend.split(',')[1];
+        await analyzeImageWithVision(base64Image, mimeToSend, resultTextarea, resultSection, status);
 
-        const response = await fetch('/api/analyze-cartola-vision', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ imageBase64: base64Image, mimeType: mimeToSend })
-        });
-
-        if (!response.ok) {
-            const errData = await response.json().catch(() => ({}));
-            throw new Error(errData.error || `Error HTTP ${response.status}`);
-        }
-
-        const data = await response.json();
-        const content = data.choices?.[0]?.message?.content || '';
-        let jsonStr = extractJsonFromContent(content);
-
-        let parsed;
-        try {
-            parsed = JSON.parse(jsonStr);
-        } catch (e) {
-            throw new Error('La respuesta no es un JSON válido.');
-        }
-
-        if (!parsed.movimientos || !Array.isArray(parsed.movimientos)) {
-            throw new Error('No se encontraron movimientos.');
-        }
-
-        await handleParsedMovimientos(parsed.movimientos, resultTextarea, resultSection, status, 'IA de visión');
-
-    } catch (visionError) {
-        console.error('Error visión:', visionError);
-        status.textContent = `❌ Error: OCR y visión directa fallaron.`;
+    } catch (error) {
+        console.error('Error general:', error);
+        status.textContent = `❌ Error: ${error.message}`;
         status.className = 'process-status error';
     } finally {
         processBtn.disabled = false;
