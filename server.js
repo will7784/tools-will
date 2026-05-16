@@ -3,13 +3,22 @@ const path = require('path');
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-// Cargar pdf-to-img de forma lazy (ESM) para evitar crash en arranque
+// Cargar librerías PDF de forma lazy para evitar crash en arranque
 let pdfToImg = null;
+let pdfParse = null;
+
 async function getPdfToImg() {
     if (!pdfToImg) {
         pdfToImg = await import('pdf-to-img');
     }
     return pdfToImg;
+}
+
+async function getPdfParse() {
+    if (!pdfParse) {
+        pdfParse = require('pdf-parse');
+    }
+    return pdfParse;
 }
 
 app.use(express.json({ limit: '50mb' }));
@@ -302,6 +311,53 @@ app.post('/api/analyze-cartola-vision', async (req, res) => {
         res.json(result);
     } catch (error) {
         console.error('Error visión:', error);
+        res.status(500).json({ error: error.message });
+    }
+});
+
+// Endpoint para extraer texto nativo de un PDF o convertir a imagen si es escaneado
+app.post('/api/extract-pdf-text', async (req, res) => {
+    const { pdfBase64 } = req.body;
+    if (!pdfBase64) {
+        return res.status(400).json({ error: 'No se recibió PDF' });
+    }
+
+    try {
+        const pdfBuffer = Buffer.from(pdfBase64, 'base64');
+        const pdfParser = await getPdfParse();
+        const parsed = await pdfParser(pdfBuffer);
+        const text = parsed.text || '';
+
+        // Si el PDF tiene texto sustancial (más de 200 chars), devolverlo
+        if (text.trim().length > 200) {
+            console.log(`PDF nativo: extraídos ${text.trim().length} caracteres de texto`);
+            return res.json({ hasText: true, text: text.trim() });
+        }
+
+        // Si no tiene texto, es un PDF escaneado: convertir a imagen
+        console.log('PDF escaneado detectado (sin texto nativo). Convirtiendo a imagen...');
+        try {
+            const pdfLib = await getPdfToImg();
+            const dataUrl = `data:application/pdf;base64,${pdfBase64}`;
+            const doc = await pdfLib.pdf(dataUrl, { scale: 3 });
+            let firstPageBuffer = null;
+            for await (const image of doc) {
+                firstPageBuffer = image;
+                break;
+            }
+            if (!firstPageBuffer) {
+                throw new Error('No se pudo renderizar el PDF');
+            }
+            const imageBase64 = firstPageBuffer.toString('base64');
+            res.json({ hasText: false, imageBase64, mimeType: 'image/png' });
+        } catch (convertErr) {
+            console.error('Error convirtiendo PDF a imagen:', convertErr);
+            res.status(500).json({
+                error: 'El PDF no tiene texto seleccionable y no se pudo convertir a imagen. Asegúrate de que npm install se ejecutó correctamente en Railway.'
+            });
+        }
+    } catch (error) {
+        console.error('Error extrayendo PDF:', error);
         res.status(500).json({ error: error.message });
     }
 });
